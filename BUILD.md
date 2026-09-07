@@ -103,9 +103,10 @@ cargo test --lib -- --ignored    # 实网测试：STUN 探测、MQTT Exchange、
 go run tests/go-vector/main.go   # 生成向量；Rust 单测内置断言逐字节一致
 
 # 跨实现互通 harness
-#   Go 侧:  ../p2premote-punch/tmp-interop（临时目录，未提交）
-go run ./tmp-interop exchange <exmode> <token> <data>
-go run ./tmp-interop tunnel <active|passive> <token> [wgPort]
+#   Go 侧（自包含模块，replace 指向 ../p2premote-punch）:
+cd go-interop
+go run . exchange <exmode> <token> <data>
+go run . tunnel <active|passive> <token> [wgPort]
 #   Rust 侧:
 cargo run --release --example interop -- exchange <exmode> <token> <data>
 cargo run --release --example interop -- tunnel <active|passive> <token> [wgPort]
