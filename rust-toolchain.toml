@@ -1,0 +1,5 @@
+# 与 p2premote-desktop-client 的工具链保持同版本：剥离 rustlib 后的静态库
+# 要求宿主使用同一版本工具链的 std 符号。
+[toolchain]
+channel = "1.94.1"
+profile = "minimal"

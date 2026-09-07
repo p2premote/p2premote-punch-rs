@@ -7,7 +7,7 @@ license = "MIT"
 
 [lib]
 name = "p2premote_punch"
-crate-type = ["cdylib", "staticlib", "rlib"]
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util"] }
