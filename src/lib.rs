@@ -352,6 +352,29 @@ fn handle_exchange_json(input: &str) -> String {
     encode_exchange_result(&result)
 }
 
+/// Blocking, allocation-owned Rust entry points for native Rust consumers.
+///
+/// These wrappers intentionally use the existing JSON contract while the
+/// desktop client migrates away from the Go DLL. They are separate from the
+/// exported C ABI and can be replaced by strongly typed APIs in the complete
+/// gonc parity milestone.
+pub mod api {
+    /// Start a UDP4 punch tunnel from a JSON request.
+    pub fn start_udp_tunnel_json(input: &str) -> String {
+        super::handle_start_udp_tunnel_json(input)
+    }
+
+    /// Stop a previously registered UDP tunnel from a JSON request.
+    pub fn stop_udp_tunnel_json(input: &str) -> String {
+        super::handle_stop_udp_tunnel_json(input)
+    }
+
+    /// Perform the existing gonc-compatible address exchange.
+    pub fn exchange_json(input: &str) -> String {
+        super::handle_exchange_json(input)
+    }
+}
+
 fn encode_exchange_result(result: &ExchangeResult) -> String {
     match serde_json::to_string(result) {
         Ok(s) => s,
