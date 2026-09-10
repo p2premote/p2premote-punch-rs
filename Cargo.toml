@@ -9,6 +9,10 @@ license = "MIT"
 name = "p2premote_punch"
 crate-type = ["staticlib", "rlib"]
 
+[features]
+default = ["ffi"]
+ffi = []
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util"] }
 socket2 = "0.6"

@@ -433,6 +433,8 @@ fn encode_exchange_result(result: &ExchangeResult) -> String {
 
 // ============ exported C ABI ============
 
+#[cfg(feature = "ffi")]
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StartUdpTunnel(input: *const c_char) -> *mut c_char {
     match unsafe { input_to_string(input) } {
@@ -441,6 +443,7 @@ pub extern "C" fn StartUdpTunnel(input: *const c_char) -> *mut c_char {
     }
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopUdpTunnel(input: *const c_char) -> *mut c_char {
     match unsafe { input_to_string(input) } {
@@ -449,6 +452,7 @@ pub extern "C" fn StopUdpTunnel(input: *const c_char) -> *mut c_char {
     }
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StartSubnetRouter(input: *const c_char) -> *mut c_char {
     match unsafe { input_to_string(input) } {
@@ -457,6 +461,7 @@ pub extern "C" fn StartSubnetRouter(input: *const c_char) -> *mut c_char {
     }
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopSubnetRouter(input: *const c_char) -> *mut c_char {
     match unsafe { input_to_string(input) } {
@@ -465,6 +470,7 @@ pub extern "C" fn StopSubnetRouter(input: *const c_char) -> *mut c_char {
     }
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn GetSubnetRouterStatus(input: *const c_char) -> *mut c_char {
     match unsafe { input_to_string(input) } {
@@ -473,16 +479,19 @@ pub extern "C" fn GetSubnetRouterStatus(input: *const c_char) -> *mut c_char {
     }
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn GetWgCapabilities(_input: *const c_char) -> *mut c_char {
     alloc_cstring(encode_json(&platform::platform_wg_capabilities()))
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn GenerateWgKeypair(_input: *const c_char) -> *mut c_char {
     alloc_cstring(encode_json(&platform::generate_wg_keypair()))
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StartWindowsWgPeer(input: *const c_char) -> *mut c_char {
     match unsafe { input_to_string(input) } {
@@ -491,6 +500,7 @@ pub extern "C" fn StartWindowsWgPeer(input: *const c_char) -> *mut c_char {
     }
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopWindowsWgPeer(input: *const c_char) -> *mut c_char {
     match unsafe { input_to_string(input) } {
@@ -499,6 +509,7 @@ pub extern "C" fn StopWindowsWgPeer(input: *const c_char) -> *mut c_char {
     }
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn GetWindowsWgPeerStatus(input: *const c_char) -> *mut c_char {
     match unsafe { input_to_string(input) } {
@@ -507,6 +518,7 @@ pub extern "C" fn GetWindowsWgPeerStatus(input: *const c_char) -> *mut c_char {
     }
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn SetWindowsWgPeerAllowed(input: *const c_char) -> *mut c_char {
     match unsafe { input_to_string(input) } {
@@ -515,11 +527,13 @@ pub extern "C" fn SetWindowsWgPeerAllowed(input: *const c_char) -> *mut c_char {
     }
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopWindowsWgEngine(_input: *const c_char) -> *mut c_char {
     alloc_cstring(encode_json(&platform::stop_userspace_wg_engine()))
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn CleanupWindowsWgPlatform(_input: *const c_char) -> *mut c_char {
     alloc_cstring(encode_json(&platform::cleanup_userspace_wg_platform()))
@@ -528,36 +542,43 @@ pub extern "C" fn CleanupWindowsWgPlatform(_input: *const c_char) -> *mut c_char
 // Generic userspace-WG ABI v2. The Windows-named exports above remain as
 // compatibility aliases (kept from the Go ABI).
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StartUserspaceWgPeer(input: *const c_char) -> *mut c_char {
     StartWindowsWgPeer(input)
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopUserspaceWgPeer(input: *const c_char) -> *mut c_char {
     StopWindowsWgPeer(input)
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn GetUserspaceWgPeerStatus(input: *const c_char) -> *mut c_char {
     GetWindowsWgPeerStatus(input)
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn SetUserspaceWgPeerAllowed(input: *const c_char) -> *mut c_char {
     SetWindowsWgPeerAllowed(input)
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopUserspaceWgEngine(input: *const c_char) -> *mut c_char {
     StopWindowsWgEngine(input)
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn CleanupUserspaceWgPlatform(input: *const c_char) -> *mut c_char {
     CleanupWindowsWgPlatform(input)
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn FreeCString(ptr: *mut c_char) {
     if !ptr.is_null() {
@@ -565,6 +586,7 @@ pub extern "C" fn FreeCString(ptr: *mut c_char) {
     }
 }
 
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn Exchange(input: *const c_char) -> *mut c_char {
     match unsafe { input_to_string(input) } {
