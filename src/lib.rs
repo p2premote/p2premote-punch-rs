@@ -18,7 +18,7 @@ use std::os::raw::{c_char, c_int};
 use types::*;
 
 /// Public request/result types for native Rust integrations.
-pub use types::{StopTunnelInput, UdpTunnelInput, UdpTunnelResult};
+pub use types::{ExchangeInput, ExchangeResult, StopTunnelInput, UdpTunnelInput, UdpTunnelResult};
 
 const NULL_INPUT: &str = r#"{"ok":false,"error":"input is null"}"#;
 
@@ -387,6 +387,25 @@ pub mod api {
     /// Stop a native Rust tunnel by its registered handle ID.
     pub fn stop_udp_tunnel(handle_id: &str) {
         handles::stop_udp_tunnel(handle_id);
+    }
+
+    /// Execute the MQTT key/address exchange without the C ABI.
+    pub async fn exchange(
+        request: types::ExchangeInput,
+        timeout: Duration,
+    ) -> Result<types::ExchangeResult, String> {
+        let budget = timeout + Duration::from_secs(10);
+        let recv = easyp2p::exchange::mqtt_exchange_payload(
+            request.exmode,
+            &request.send_data,
+            &request.token,
+            "wgvpn-kx/",
+            timeout,
+            budget,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(types::ExchangeResult { ok: true, recv_data: recv, error: String::new() })
     }
 
     /// Start a UDP4 punch tunnel from a JSON request.
