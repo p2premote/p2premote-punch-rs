@@ -17,6 +17,9 @@ use std::os::raw::{c_char, c_int};
 
 use types::*;
 
+/// Public request/result types for native Rust integrations.
+pub use types::{StopTunnelInput, UdpTunnelInput, UdpTunnelResult};
+
 const NULL_INPUT: &str = r#"{"ok":false,"error":"input is null"}"#;
 
 fn alloc_cstring(s: String) -> *mut c_char {
@@ -359,6 +362,33 @@ fn handle_exchange_json(input: &str) -> String {
 /// exported C ABI and can be replaced by strongly typed APIs in the complete
 /// gonc parity milestone.
 pub mod api {
+    use std::time::Duration;
+
+    use super::{easyp2p, handles, types};
+
+    /// Start a UDP4 tunnel without crossing the C ABI or creating a nested
+    /// runtime. The returned result contains the registered handle ID.
+    pub async fn start_udp_tunnel(
+        request: types::UdpTunnelInput,
+        budget: Duration,
+    ) -> Result<types::UdpTunnelResult, String> {
+        let tunnel = easyp2p::udp_tunnel::start_udp_tunnel(request, budget)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut result = tunnel.result;
+        let stop = tunnel.stop;
+        result.handle_id = handles::register_udp_tunnel(
+            result.clone(),
+            Box::new(move || stop.stop()),
+        );
+        Ok(result)
+    }
+
+    /// Stop a native Rust tunnel by its registered handle ID.
+    pub fn stop_udp_tunnel(handle_id: &str) {
+        handles::stop_udp_tunnel(handle_id);
+    }
+
     /// Start a UDP4 punch tunnel from a JSON request.
     pub fn start_udp_tunnel_json(input: &str) -> String {
         super::handle_start_udp_tunnel_json(input)
