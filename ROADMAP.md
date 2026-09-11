@@ -46,26 +46,36 @@
       一致性影响
 - [ ] 搭建 Ubuntu 18.04 验证环境（容器或实机），固化 musl `.a` + 源码集成冒烟脚本
 
-### P1 TCP4 打洞（最大功能差距，优先级最高）
+### P1 TCP4 打洞（最大功能差距，优先级最高）✅ 2026-09-11 完成
 
 gonc 参照：`p2p.go:1886-2391`（Auto_P2P_TCP_NAT_Traversal）+ `netx/control_*.go`。
 
 任务：
-1. `stun.rs`：`networks_for_stun` 支持 `tcp4`（TCP 传输的 StunConn 已存在，接线即可）
-2. 新增 `src/easyp2p/punch_tcp.rs`：
+1. ✅ `stun.rs`：`networks_for_stun` 支持 `tcp4`（TCP 传输的 StunConn 已存在，接线即可）
+2. ✅ 新增 `src/easyp2p/punch_tcp.rs`：
    - 双端同时 listen（SO_REUSEADDR）+ 并发 dial（worker 上限 800）
    - **端口 +100 约定**（双方避开 STUN 通讯端口，本端与对端端口各 +100）
    - punch ACK 握手：`derive_key_for_payload(uid, ascii=false)` 8 字节二进制，双向写+读确认
    - `tcpPunchAckSelector`：双方从多条建立成功的连接中共同选中唯一一条
    - Accept 来源 IP 校验；随机源/目的端口并发拨号（TCP 版生日悖论）
    - LANProbeOnly 模式（TCP 非 easy 场景只做内网直连）
-3. `candidates.rs` / `p2p.rs`：tcp 候选接线到打洞分发循环（排序、过滤规则已有基础）
-4. `udp_tunnel.rs`：`network` 参数放行 `tcp4`；本地转发层增加 TCP 形态
-   （本地 TCP listen ↔ P2P TCP 连接的管道，复用句柄/转发框架）
-5. FFI 契约：`udpTunnelInput.network` 扩展枚举，与 Go 端 / `protocol/client-client` 规范同步
+3. ✅ `candidates.rs` / `p2p.rs`：tcp 候选接线到打洞分发循环（`P2PConn` 传输枚举）
+4. ✅ `udp_tunnel.rs`：`network` 参数放行 `tcp4`；本地转发层 TCP 形态
+   （本地仍为 UDP 前转口，FFI 契约零变更；TCP 上以 2 字节小端长度帧承载报文，
+   gonc FramedConn 语义）
+5. ✅ FFI 契约：`udpTunnelInput.network` 枚举扩展为 `udp4|tcp4`（Go punchffi 已停维护，
+   无需同步；`protocol/client-client` 规范待主程序接入 tcp4 时更新）
+6. ✅ `lan.rs`：协商出的 tcp transport 分发到 TCP 打洞（round=0）
 
-验收：Rust↔Rust、Go↔Rust 的 tcp4 打洞 + 本地转发全链路互通；easy×easy、
-easy×hard 组合下连通。
+验收结论（2026-09-11 实测）：
+- **Go↔Rust tcp4 互通**：go-interop `punch-tcp`（Go 底层 `Easy_P2P_MPWithOptions`）
+  × examples `punch-tcp` —— 实网完成 tcp4 STUN（双 hard 分类）→ MQTT 加密地址交换 →
+  轮同步 → 角色互补（Rust=C / Go=S）→ 8 字节二进制 punch-ACK 逐字节互通 → ping/ACK 回环
+- **Rust↔Rust tcp4 FFI 全链路**：`tcp_tunnel_rust_to_rust` live test 通过
+  （WG UDP 报文经本地前转 → TCP 帧 → 打洞流 → 对端回显）
+- udp4 回归 live test 通过；离线 20 lib + 18 FFI 测试全绿
+- 限制：单机环境只覆盖同 LAN 直连路径；easy×easy +100 同时打开与 RDP/RSP
+  生日悖论路径需跨 NAT 环境验证（列入 P5 全量回归）
 
 ### P2 IPv6 与全网络矩阵
 

@@ -94,9 +94,11 @@ GetWindowsWgPeerStatus SetWindowsWgPeerAllowed`。另有链接期冲突标记
   unsupported 错误；`GenerateWgKeypair` 同样返回错误（与 Go 在 Linux 上一致）；
   caps 中 `userspace_wg=false`。**桌面客户端 win/mac 版继续使用现有 Go
   DLL/dylib。**
-- **TCP 打洞未移植**：FFI 路径 `network` 恒为 `udp4`（StartUDPTunnel 校验强制），
-  `NetworksForStun("udp4")` 只产生 UDP 候选，TCP 遍历在 Go 版同路径下也不可达
-  —— 行为等价。
+- **TCP 打洞已移植（2026-09-11）**：`StartUdpTunnel` 的 `network` 接受 `tcp4`。
+  P2P 传输为 TCP 时，本地前转仍是 UDP 口（WG 消费方即 UDP，FFI JSON 契约零变更），
+  报文以 2 字节小端长度帧（gonc FramedConn 语义）在打洞出的 TCP 流上承载。
+  Go 侧互通经 go-interop `punch-tcp`（底层 `Easy_P2P_MPWithOptions`）实测通过。
+  注意：Go punchffi 已停维护，`network=tcp4` 为 Rust 独有扩展。
 - 日志：默认静默（Go 侧 FFI 也是把日志写进丢弃的 buffer）；设
   `P2PREMOTE_PUNCH_LOG=1` 输出 easyp2p 诊断日志到 stderr。
 - 已知实现细节差异（不影响协议互通）：STUN 重传节奏、随机数源、rumqttc 与
