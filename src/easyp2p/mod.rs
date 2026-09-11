@@ -11,6 +11,7 @@ pub mod punch_tcp;
 pub mod punch_udp;
 pub mod stun;
 pub mod udp_tunnel;
+pub mod wake;
 
 #[cfg(test)]
 mod live_tests;

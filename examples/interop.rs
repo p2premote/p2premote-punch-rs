@@ -35,11 +35,62 @@ fn main() {
         "exchange" => exchange(&args[2..]),
         "tunnel" => tunnel(&args[2..]),
         "punch-tcp" => punch_tcp(&args[2..]),
+        "wait" => wait_cmd(&args[2..]),
+        "hello" => hello_cmd(&args[2..]),
         other => {
             eprintln!("unknown mode {}", other);
             std::process::exit(2);
         }
     }
+}
+
+/// Wake channel against the Go harness: `wait <token>` parks until a hello,
+/// `hello <token> [app] [param]` wakes it. Both print the same tid on success.
+fn wait_cmd(args: &[String]) {
+    let token = args[0].clone();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            use p2premote_punch::easyp2p::wake::mqtt_wait;
+            use p2premote_punch::easyp2p::Scope;
+            let scope = Scope::from_timeout(Duration::from_secs(70));
+            match mqtt_wait(&scope, &token, "", Duration::from_secs(60)).await {
+                Ok(tid) => {
+                    let (parsed, salt) = p2premote_punch::easyp2p::wake::HelloPayload::parse_from(&tid);
+                    println!("WAIT_TID {:?} salt={:?} control={:?} app={:?} param={:?}", tid, salt, parsed.control, parsed.app, parsed.param);
+                }
+                Err(err) => println!("WAIT_FAILED error={}", err),
+            }
+        });
+}
+
+fn hello_cmd(args: &[String]) {
+    let token = args[0].clone();
+    let mut payload = p2premote_punch::easyp2p::wake::HelloPayload::default();
+    if let Some(app) = args.get(1) {
+        payload.app = app.clone();
+        if let Some(param) = args.get(2) {
+            payload.param = param.clone();
+        }
+    }
+    if let Some(cs) = args.get(3) {
+        payload.set_control_value("cs", cs);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            use p2premote_punch::easyp2p::wake::mqtt_hello;
+            use p2premote_punch::easyp2p::Scope;
+            let scope = Scope::from_timeout(Duration::from_secs(70));
+            match mqtt_hello(&scope, &token, "", &payload, Duration::from_secs(30)).await {
+                Ok(tid) => println!("HELLO_TID {:?}", tid),
+                Err(err) => println!("HELLO_FAILED error={}", err),
+            }
+        });
 }
 
 /// Raw TCP punch against the Go harness (`go run . punch-tcp <token>`): the

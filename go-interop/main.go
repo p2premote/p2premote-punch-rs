@@ -41,9 +41,57 @@ func main() {
 		tunnel(os.Args[2:])
 	case "punch-tcp":
 		punchTCP(os.Args[2:])
+	case "wait":
+		waitCmd(os.Args[2:])
+	case "hello":
+		helloCmd(os.Args[2:])
 	default:
 		die("unknown mode " + os.Args[1])
 	}
+}
+
+func waitCmd(args []string) {
+	if len(args) < 1 {
+		die("usage: wait <token>")
+	}
+	token := args[0]
+	logs := io.Writer(os.Stderr)
+	if os.Getenv("GO_QUIET") != "" {
+		logs = io.Discard
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Second)
+	defer cancel()
+	tid, err := easyp2p.MqttWait(ctx, token, "", 60*time.Second, logs)
+	if err != nil {
+		die("wait failed: " + err.Error())
+	}
+	control, app, _ := easyp2p.ParseMQTTHelloPayload(tid)
+	fmt.Printf("WAIT_TID %q control=%q app=%q\n", tid, control, app)
+}
+
+func helloCmd(args []string) {
+	if len(args) < 1 {
+		die("usage: hello <token> [app] [param]")
+	}
+	token := args[0]
+	payload := easyp2p.HelloPayload{}
+	if len(args) > 1 {
+		payload.App = args[1]
+	}
+	if len(args) > 2 {
+		payload.Param = args[2]
+	}
+	logs := io.Writer(os.Stderr)
+	if os.Getenv("GO_QUIET") != "" {
+		logs = io.Discard
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Second)
+	defer cancel()
+	tid, err := easyp2p.MQTTHello(ctx, token, "", payload, 30*time.Second, logs)
+	if err != nil {
+		die("hello failed: " + err.Error())
+	}
+	fmt.Printf("HELLO_TID %q\n", tid)
 }
 
 func die(msg string) {
