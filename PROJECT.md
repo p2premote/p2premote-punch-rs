@@ -1,7 +1,7 @@
 # p2premote-punch-rs 项目说明
 
 gonc（Go 版 NAT 穿透 / P2P 打洞库）的 Rust 复刻，作为 p2premote 主程序的打洞传输层。
-**长期目标：完整复刻 gonc 的 P2P 穿透能力，最终替换 Go 侧 punchffi 库。**
+**长期目标：完整复刻 gonc 的 P2P 穿透能力（中继模式按决策不实现），最终替换 Go 侧 punchffi 库。**
 
 | 仓库 | 角色 |
 |---|---|
@@ -72,7 +72,7 @@ p2premote-desktop-client   消费方（Windows/macOS 目前仍用 Go DLL/dylib�
 |---|---|---|
 | TCP 打洞（tcp4/tcp6） | `network != "udp4"` 直接拒绝（`src/easyp2p/udp_tunnel.rs:367`） | `easyp2p/p2p.go:1886-2391` |
 | IPv6（udp6 / "any" 网络矩阵） | `networks_for_stun("udp4")` 恒返回 `["udp4"]`（`src/easyp2p/stun.rs:31`） | `easyp2p/stun.go:29-46` |
-| SOCKS5 UDP 中继（relay） | `allow_relay=true` 报错（`udp_tunnel.rs:371`） | `apps/socks5u.go`、`p2p.go:301-477` |
+| SOCKS5 UDP 中继（relay） | **决策不实现**：维持 `allow_relay=true` 报错（`udp_tunnel.rs:371`） | GONC_DESIGN §14（仅记录） |
 | MQTT 唤醒（wait/hello） | 无 | `easyp2p/p2p.go:2393-2613` |
 | 参数可配置（STUN/broker/TTL/端口数） | 硬编码常量 | gonc 导出变量可被 CLI 覆盖 |
 | NAT 类型独立查询入口 | 仅内部使用 | `DetectNATAddressInfo`（-nat-checker） |

@@ -5,8 +5,8 @@
 
 > 各阶段涉及的 gonc 流程细节（状态机/时序/报文格式/常量）统一参照
 > **[GONC_DESIGN.md](GONC_DESIGN.md)**：P1→§10/§11（UDP/TCP 打洞状态机）、
-> P2→§2/§5（网络矩阵与 STUN）、P3→§14（SOCKS5 中继）、P4→§15（唤醒）、
-> LAN 相关→§12/§13。
+> P2→§2/§5（网络矩阵与 STUN）、P3→§15（唤醒）、LAN 相关→§12/§13。
+> 中继（GONC_DESIGN §14）按决策**不复刻**，文档仅作 gonc 设计记录。
 
 ## 1. 范围界定
 
@@ -16,15 +16,15 @@
 |---|---|---|
 | TCP4 打洞 | `easyp2p/p2p.go:1886-2391` | ❌ 未实现 |
 | IPv6 网络矩阵（tcp6 / udp6 / "any"） | `easyp2p/stun.go:29-46` | ❌ 仅 udp4 |
-| SOCKS5 UDP 中继（relay fallback） | `apps/socks5u.go`、`p2p.go:301-477` | ❌ allow_relay 被拒 |
 | MQTT 唤醒（MqttWait / MQTTHello） | `easyp2p/p2p.go:2393-2613` | ❌ 未实现 |
 | 参数可配置（STUN/broker/TTL/端口数/topic） | gonc 导出变量 | ❌ 硬编码 |
 | NAT 类型独立查询（-nat-checker 等价入口） | `DetectNATAddressInfo` | ⚠️ 仅内部使用 |
 
-### 1.2 范围外 / 并行工作流（需明确决策）
+### 1.2 范围外 / 明确排除 / 并行工作流
 
-| 工作流 | 说明 | 默认决策 |
+| 工作流 | 说明 | 决策 |
 |---|---|---|
+| **relay 中继（SOCKS5 UDP ASSOCIATE）** | gonc 的 `-x`/`-x2` 降级路径（GONC_DESIGN §14） | **已决策：不实现**（2026-09-11）。FFI 维持 `allow_relay=true` 报错 |
 | **WX1 userspace WireGuard 数据面**（boringtun + wintun/utun + 用户态 TCP 栈） | **不属于 gonc 复刻**（是 p2premote 扩展），但属于"完全替换 Go 库"的必要条件（Win/Mac 侧） | 并行推进，独立排期 |
 | **WX2 secure 层**（TLS1.3+PSK / DTLS / KCP / ShadowStream） | gonc 有；但 p2premote-punch 已删除 secure 栈并固定**明文 UDP**，主程序不需要 | 默认**不做**，仅当要做独立 gonc CLI 替代品时启动 |
 | **WX3 gonc 应用层**（netcat CLI、mux、socks5 server、文件分享、PTY shell、端口轮换、ACL） | 属于 gonc 工具本体，不属于打洞库定位 | 默认**不做** |
@@ -76,23 +76,7 @@ easy×hard 组合下连通。
 验收：v6 环境（本机 v6 + 公网 v6）Rust↔Go 互通；`any` 模式下网络优选顺序
 tcp6 > tcp4 > udp4 生效。
 
-### P3 SOCKS5 UDP 中继（relay fallback）
-
-gonc 参照：`apps/socks5u.go`（SOCKS5 客户端 + UDP ASSOCIATE）、`p2p.go:301-477`
-（RelayPacketConn、两轮 STUN、relay 候选与打洞模式）。
-
-任务：
-1. SOCKS5 客户端：CONNECT + **UDP ASSOCIATE**（`Socks5UDPPacketConn` 等价，
-   复用已有 UdpMux 会话复用）
-2. relay 地址探测：经 relayConn 再做一轮 STUN，得 `nattype="relay"` 的候选地址
-3. relay 打洞模式：TTL 恢复 64、不用生日悖论；本端为 relay 时不主动向对端 NAT 发包，
-   只持续向 `127.0.0.1:65535` 发包打通本机防火墙；换新源端口 ping
-4. `udp_tunnel.rs`：`allow_relay=true` 放行 + relay 输入参数（SOCKS5 服务器地址）
-5. FFI 契约扩展与协议规范同步
-
-验收：一端走 SOCKS5 中继、对端直连时 Rust↔Go 互通（等价 gonc 的 `-x`/`-x2` 场景）。
-
-### P4 MQTT 唤醒（MqttWait / MQTTHello）
+### P3 MQTT 唤醒（MqttWait / MQTTHello）
 
 gonc 参照：`p2p.go:2393-2613`（`nat-exchange-wait/<uid>` topic、`SYN@tid`/`ACK@tid`、
 `HelloPayload` 字符串化 `";k=v;k=v|App::Param"`）。
@@ -102,23 +86,23 @@ gonc 参照：`p2p.go:2393-2613`（`nat-exchange-wait/<uid>` topic、`SYN@tid`/`
 
 验收：与 Go CLI `-mqtt-wait` / `-mqtt-hello` 互通唤醒后打洞。
 
-### P5 参数化与库 API 对齐
+### P4 参数化与库 API 对齐
 
 任务：
 1. 可配置项：STUN 服务器列表、MQTT broker 列表、`PunchingShortTTL`、
    `PunchingRandomPortCount`、`TopicExchange`（builder / 环境变量两级）
 2. `DetectNATAddressInfo` 等价入口（Rust api + 可选 FFI），对齐 gonc `-nat-checker`
-3. 复核 `EasyP2PMPOptions` 形态的选项对象（Bind / Multipath / RelayConn / 回调）
+3. 复核 `EasyP2PMPOptions` 形态的选项对象（Bind / Multipath / 回调；RelayConn 按决策不实现）
 
 验收：同参数下与 Go 行为一致；参数覆盖经 interop 测试验证。
 
-### P6 老系统交付与全量回归
+### P5 老系统交付与全量回归
 
 任务：
 1. Ubuntu 18.04：musl `.a` 与源码集成两条路径实机冒烟（P0 环境上执行）
 2. Win7：按 P0 调研结论落地交付物（可能需要独立工具链 profile 与 win7 target；
    若决策为 Win7 继续用 Go go120 wgonly DLL，则本项缩小为打洞库验证）
-3. 全回归：离线 FFI 测试 + c-tests + go-interop 全矩阵（udp4/tcp4/v6/relay/lan/exchange）
+3. 全回归：离线 FFI 测试 + c-tests + go-interop 全矩阵（udp4/tcp4/v6/lan/exchange）
    + 实网 live tests
 
 验收：目标老系统冒烟通过；BUILD.md 更新交付矩阵。
@@ -139,7 +123,7 @@ smoltcp（或自评估 gVisor 等价物）；`GenerateWgKeypair` 用 x25519 实�
 | 互通 | `go-interop/` + `examples/interop.rs` | **每阶段必须全通**，Go 原生 easyp2p ↔ Rust |
 | C 宿主 | `c-tests/` | 链接与 JSON 契约冒烟 |
 | 实网 | `easyp2p/live_tests.rs`（`#[ignore]`） | 手动跑，覆盖 NAT 组合矩阵 |
-| 老系统 | P0 搭建的环境 | P6 全量冒烟 |
+| 老系统 | P0 搭建的环境 | P5 全量冒烟 |
 
 ## 4. 老系统兼容矩阵
 
@@ -166,7 +150,7 @@ smoltcp（或自评估 gVisor 等价物）；`GenerateWgKeypair` 用 x25519 实�
    与 CLI 工具本体（WX2/WX3）？
 2. **Win7 终态**：Rust 全量替换（含 WX1 WG 数据面），还是 Win7 长期维持
    "Go go120 wgonly DLL + Rust 打洞库"分工？
-3. **FFI 契约演进方式**：tcp4/relay 等新枚举是否同步推进 Go 端 punchffi 与
+3. **FFI 契约演进方式**：tcp4 等新枚举是否同步推进 Go 端 punchffi 与
    `protocol/client-client` 规范升级（三端对齐节奏）？
 
 ## 7. 分支与交付节奏

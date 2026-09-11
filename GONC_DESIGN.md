@@ -4,6 +4,10 @@
 > 本文是 gonc **NAT 穿透全部流程**的设计级描述，供 p2premote-punch-rs 复刻使用。
 > 不含代码细节；所有时间常量、报文格式、状态转移均为协议行为的一部分，必须精确复刻。
 > 各节标注参照文件，便于回溯核对。
+>
+> **复刻范围注**：中继模式（relay）按决策**不复刻**（2026-09-11）——§14 及全文
+> relay 相关段落仅为 gonc 设计记录；p2premote-punch-rs 不实现 SOCKS5 中继，
+> FFI 维持 `allow_relay=true` 拒绝。
 
 ---
 
@@ -63,7 +67,7 @@ LAN 直连（`lan.go`）是独立于 MQTT/STUN 的旁路：组播发现后直接
 ```
 发起端/接收端（双方对称执行，仅口令相同）
 ═══════════════════════════════════════════════════════════
-[CLI] 解析参数；(-x/-x2 时) 建 SOCKS5 relayConn（可选）
+[CLI] 解析参数；(-x/-x2 时) 建 SOCKS5 relayConn（可选；不复刻）
 [CLI] (-mqtt-wait/-mqtt-hello 时) 唤醒握手，得 topicSalt（可选，§15）
 [CLI] sessionUid = p2pSessionKey + topicSalt（无唤醒时 salt 为空）
         │
@@ -275,7 +279,7 @@ IP 天然各自成组，每个组合输出一条独立结论：
 
 relay 场景：探测走中继时结果 NatType 强制为 `"relay"`。
 
-### 5.7 relay 双轮探测（编排层，`p2p.go:432`）
+### 5.7 relay 双轮探测（编排层，`p2p.go:432`；不复刻）
 
 - 无 relayConn：仅直连探测一轮。
 - 有 relayConn 且非 Fallback 模式（`-x`）：仅经中继探测一轮。
@@ -405,7 +409,7 @@ Client 发 `"C<n>"` 等 `"S<n>"`；Server 反之。经 MQTT 加密信封 mutual 
 状态：maxRounds=5；role 首次成功时锁定；relayModeAttempted 计数
 
 遍历排序后候选：
-  ① relay 插入时机：relayAvailable 且从未试过 relay 且已到最后一轮预算
+  ① relay 插入时机（不复刻）：relayAvailable 且从未试过 relay 且已到最后一轮预算
      → 跳过所有非 relay 候选（保证 relay 在轮次耗尽前至少被尝试一次）
   ② round += 1；round > 0 → 轮次同步（25s，失败即整体终止）
   ③ tcp* → TCP 打洞；否则 → UDP 打洞
@@ -505,7 +509,7 @@ for i in 0..count(18 或 8):
 - **路径 B（重建失败）**：标记强制重绑，直接进入 finalize——用"只带端口不带 IP"的
   通配重绑方式拿回端口。
 
-### 10.8 relay 模式的收发差异
+### 10.8 relay 模式的收发差异（不复刻）
 
 - **本端 relay、对端公网**：不向对端 NAT 发任何打洞包（relay 在公网可直接收包，
   主动发反而触发对端 NAT 防火墙）。改为起独立任务：**每 2s 经中继连接向
@@ -706,6 +710,9 @@ hard侧(C)                    各NAT                    easy侧(S)
 ---
 
 ## 14. SOCKS5 UDP 中继（relay）
+
+> **不复刻**：p2premote-punch-rs 按决策不实现中继（FFI 的 `allow_relay` 维持拒绝）。
+> 本章仅作为 gonc 完整设计记录保留。
 
 参照：`apps/socks5u.go`（客户端）、`apps/proxyclient.go`、`p2p.go` relay 部分。
 gonc 不设内置中转服务器——用一台公网 VPS 跑 gonc 的 SOCKS5 服务（支持 UDP
