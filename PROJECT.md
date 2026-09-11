@@ -19,10 +19,10 @@ gonc（Go 版 NAT 穿透 / P2P 打洞库）的 Rust 复刻，作为 p2premote �
   运行时基线，天然兼容老系统；同时通过**字节级协议兼容**与 Go 端互通（已验证
   Go↔Rust 全链路打洞）。
 
-> 兼容性说明：`rust-toolchain.toml` 锁定 Rust 1.94.1 并非为了老系统，而是
-> "std-external 静态库"要求宿主与库使用同一版本工具链的 std 符号（与
-> p2premote-desktop-client 锁定同版本）。老系统兼容由 musl 静态链接解决；Win7 侧交付
-> 路径见 ROADMAP P0/P6。
+> 兼容性说明：`rust-toolchain.toml` 锁定 Rust 1.94.1 是为"std-external 静态库"备选
+> 交付路径的宿主同版本 std 约束。**全平台 DLL 决策后主交付形态不再受此约束**（cdylib
+> 自带 std，工具链与客户端解耦）；老系统兼容由 musl 静态 / glibc 2.27 基线 `.so`
+> 解决；Win7 交付路线为 1.77 工具链编译同一 cdylib（见 ROADMAP 决策记录）。
 
 ## 2. 三个仓库的关系
 
@@ -38,9 +38,10 @@ p2premote-punch (Go)
    │  Rust 重写（easyp2p + punchffi 子集），与 Go 端字节级协议互通
    ▼
 p2premote-punch-rs (本项目)
-   │  源码 path 依赖（Linux）/ 剥离 rustlib 的静态库 .a
+   │  cdylib 动态库 + C ABI（主路径：win .dll / linux .so / mac .dylib）
+   │  备选：源码 path 依赖（Linux）/ 剥离 rustlib 的 musl 静态库 .a
    ▼
-p2premote-desktop-client   消费方（打洞：Linux 走 Rust 源码集成；Win/Mac 过渡期仍用 Go DLL/dylib）
+p2premote-desktop-client   消费方（C 接口调用；过渡期 Win/Mac 打洞仍走 Go DLL/dylib）
 ```
 
 > **分工决策（2026-09-11）**：**全平台终态**（Win7/Win10/Linux/macOS/Android）统一为
@@ -50,9 +51,9 @@ p2premote-desktop-client   消费方（打洞：Linux 走 Rust 源码集成；Wi
 
 ## 3. 当前实现状态
 
-### 3.1 已实现（udp4 链路已相当完整）
+### 3.1 已实现（打洞核心 · 全网络矩阵，均经 gonc 实网互通验收）
 
- udp4 并不是"简单 demo"，以下全链路均已落地且经 Go↔Rust 互通验证：
+UDP4 链路自初版即相当完整（并非"简单 demo"），2026-09-11 起补齐 TCP/IPv6/唤醒：
 
 - **STUN 探测**：6 个公共服务器（TCP / UDP / 多端口竞速三种传输）、手写 STUN 编解码
   （Binding Request、XOR-MAPPED-ADDRESS v4/v6）、RTO 120ms 指数退避
@@ -69,44 +70,51 @@ p2premote-desktop-client   消费方（打洞：Linux 走 Rust 源码集成；Wi
 - **Linux 子网路由**：iptables 链 `P2PREMOTE-FWD` / `P2PREMOTE-NAT`，引用计数增删
 - **FFI**：22 个 C ABI 符号（JSON-in/JSON-out），与 Go punchffi 一一对应；
   另有 Rust 原生 `api` 模块（async，不嵌套 runtime）
+- **TCP 打洞**（`punch_tcp.rs`）：同时打开 + 端口 +100 约定、8 字节二进制 punch-ACK
+  三层收敛、800 worker RDP/RSP 生日悖论、LANProbeOnly；隧道层以 2 字节长度帧在
+  TCP 流上承载 WG 报文（本地前转口不变，FFI 契约零变更）
+- **IPv6**：udp6/tcp6 全链路（按族解析、v6-only 绑定、IPV6_UNICAST_HOPS）
+- **MQTT 唤醒**（`wake.rs`）：MqttWait/MqttHello、SYN@/ACK@、HelloPayload 编解码
+- **运行时可调参数**：STUN/broker 列表、短 TTL、随机端口数、topic 前缀（环境变量，
+  gonc 包变量等价）；`api::detect_nat` NAT 分类查询入口
 - 结构化失败诊断（attempts、双端 NAT 类型回传）、幂等 stop、句柄注册表
 
-### 3.2 未实现 / 桩（与 gonc 的差距，详见 ROADMAP.md）
+### 3.2 范围外 / 桩 / 待环境验证（详见 ROADMAP 决策记录）
 
-| 差距点 | 现状 | gonc 参照 |
-|---|---|---|
-| TCP 打洞（tcp4/tcp6） | `network != "udp4"` 直接拒绝（`src/easyp2p/udp_tunnel.rs:367`） | `easyp2p/p2p.go:1886-2391` |
-| IPv6（udp6 / "any" 网络矩阵） | `networks_for_stun("udp4")` 恒返回 `["udp4"]`（`src/easyp2p/stun.rs:31`） | `easyp2p/stun.go:29-46` |
-| SOCKS5 UDP 中继（relay） | **决策不实现**：维持 `allow_relay=true` 报错（`udp_tunnel.rs:371`） | GONC_DESIGN §14（仅记录） |
-| MQTT 唤醒（wait/hello） | 无 | `easyp2p/p2p.go:2393-2613` |
-| 参数可配置（STUN/broker/TTL/端口数） | 硬编码常量 | gonc 导出变量可被 CLI 覆盖 |
-| NAT 类型独立查询入口 | 仅内部使用 | `DetectNATAddressInfo`（-nat-checker） |
-| userspace WireGuard 数据面（Win/Mac） | 全部桩返回 unsupported（`src/platform.rs`） | **决策：不做**（WX1 取消，WG 数据面长期由 Go DLL 承担） |
-| `GenerateWgKeypair` | 桩返回错误 | 维持桩（由 Go 侧/DLL 提供） |
-| secure 层（TLS/DTLS/KCP/SS） | 未实现 | gonc 有；p2premote-punch 已删除并固定明文 UDP |
+| 项 | 状态 |
+|---|---|
+| SOCKS5 UDP 中继（relay） | **决策不实现**：维持 `allow_relay=true` 报错（GONC_DESIGN §14 仅作设计记录） |
+| userspace WireGuard 数据面（Win/Mac） | **决策不做**（WX1 取消，WG 数据面长期由 go120 wgonly 承担）；`src/platform.rs` 全部桩 |
+| `GenerateWgKeypair` | 维持桩（由 Go 侧提供） |
+| secure 层（TLS/DTLS/KCP/SS） | **暂缓**（gonc 有；p2premote-punch 已删除并固定明文 UDP，主程序不需要） |
+| 跨 NAT easy×easy +100 路径实网验证 | 待双机环境（单机已覆盖同 LAN 直连与 hard×easy RSP 路径） |
+| macOS dylib 产物 | 待 mac 环境构建（无代码差异） |
+| Win7 DLL 产物 | 路线已定（1.77 工具链编译同一 cdylib），待 Win7 客户端排期 |
 
 ## 4. 代码结构
 
 ```
 src/
-├── lib.rs              FFI 入口 + JSON 编解码 + Rust 原生 api 模块（feature = "ffi" 门控）
+├── lib.rs              FFI 入口（panic 防护）+ JSON 编解码 + Rust 原生 api 模块（cdylib/staticlib/rlib）
 ├── types.rs            全部 JSON 请求/响应结构（镜像 punchffi/main.go，含 omitempty 语义）
 ├── runtime.rs          全局 tokio 多线程 runtime（支撑阻塞式 C ABI）
 ├── handles.rs          长生命周期隧道句柄注册表（udp-<unix-nanos>，幂等 stop）
 ├── platform.rs         平台能力上报 + userspace WireGuard 桩（全部 unsupported）
 ├── subnet_router.rs    Linux 子网路由：sysctl ip_forward + 引用计数 iptables 链
 └── easyp2p/            gonc NAT 穿透引擎移植（核心）
-    ├── mod.rs          常量 / 错误 / CancelToken（Go context 替代）/ Scope（deadline 递减）/ 日志
+    ├── mod.rs          错误 / CancelToken / Scope / 日志 / 运行时可调参数（env 覆盖，gonc 包变量等价）
     ├── stun.rs         STUN 探测 + NAT 分类；UdpMux 单 socket 多路复用；TCP/UDP/竞速三种 StunConn
     ├── mqtt_signal.rs  多 broker MQTT 信令会话 + exchange 原语（重连重放、burst、pending 队列）
     ├── crypto.rs       topic 派生 / AES-GCM / P-256 ECDH（与 Go 字节级一致，内置交叉验证向量）
     ├── candidates.rs   候选对构造 / 角色选择 / 排序 / 多出口备选地址
-    ├── p2p.rs          打洞总编排（do_auto_p2p_ex2 → easy_p2p_mp，5 轮候选循环）
-    ├── punch_udp.rs    UDP 打洞本体（低 TTL + RDP/RDP 600 端口喷雾 + 三连握手）
-    ├── lan.rs          LAN 组播发现（四步握手 + HMAC）
+    ├── p2p.rs          打洞总编排（do_auto_p2p_ex2 → easy_p2p_mp，5 轮候选循环；P2PConn 传输枚举分发）
+    ├── punch_udp.rs    UDP 打洞本体（低 TTL + RDP/RSP 600 端口喷雾 + 三连握手）
+    ├── punch_tcp.rs    TCP 打洞本体（+100 端口约定 / punch-ACK 三层收敛 / RDP-RSP 生日悖论）
+    ├── lan.rs          LAN 组播发现（四步握手 + HMAC；tcp/udp transport 分发）
     ├── exchange.rs     MQTT_ExchangePayload（WGVPN 密钥/IP 交换，topic salt "wgvpn-kx/"）
-    ├── netx.rs         socket 工具（REUSEADDR / SIO_UDP_CONNRESET / TTL / 强制重绑 / 空闲端口）
-    ├── udp_tunnel.rs   StartUdpTunnel：模式协调 → 打洞 → 本地 UDP 双向转发
+    ├── wake.rs         MQTT 唤醒（MqttWait/MqttHello + HelloPayload 编解码）
+    ├── netx.rs         socket 工具（REUSEADDR / SIO_UDP_CONNRESET / TTL(v4+v6) / TCP listen-dial / 空闲端口）
+    ├── udp_tunnel.rs   StartUdpTunnel：模式协调 → 打洞 → 本地 UDP 双向转发（TCP 时为帧转发）
     └── live_tests.rs   实网集成测试（#[ignore]，手动跑）
 ```
 
@@ -118,9 +126,9 @@ src/
 | `tests/go-vector/` | Go 标准库生成密码学交叉验证向量的脚本（`//go:build ignore`） |
 | `go-interop/` | Go 侧互通 harness（自包含 module，replace 指向 Go 原仓库） |
 | `c-tests/` | C 宿主冒烟测试（zig cc 链 musl） |
-| `examples/interop.rs` | 跨实现互通驱动器（exchange / tunnel 对打） |
+| `examples/interop.rs` | 跨实现互通驱动器（exchange / tunnel / punch-tcp / wait / hello） |
 | `scripts/strip-rustlib.sh` | 从 staticlib 剥离 rustlib，产出 std-external 库 |
-| `dist/` | 预构建 musl 静态库（gitignore，仅 master 工作区有） |
+| `dist/` | 预构建产物（gitignore，仅 master 工作区有）：win .dll / linux .so / musl .a ×2 |
 
 ## 5. 对外接口
 
@@ -143,6 +151,7 @@ pub async fn start_udp_tunnel(request: UdpTunnelInput, budget: Duration) -> Resu
 pub fn stop_udp_tunnel(handle_id: &str)
 pub async fn exchange(request: ExchangeInput, timeout: Duration) -> Result<ExchangeResult, String>
 pub fn start_udp_tunnel_json(input: &str) -> String   // JSON 便捷版 ×3
+pub async fn detect_nat(networks: &[&str], budget: Duration) -> Result<Vec<NatAddressInfo>, String>
 ```
 
 ## 6. 协议兼容性要点（改动时必须保持）
@@ -156,7 +165,7 @@ pub fn start_udp_tunnel_json(input: &str) -> String   // JSON 便捷版 ×3
 - `derive_key = sha256(sha256("nc-p2p-tool" ‖ salt ‖ uid))`（AES 密钥）
 - ECDH：P-256 非压缩 SEC1 公钥，共享密钥 = `sha256(X 坐标去前导零)`
 - LAN 发现：magic `GONC-LAN-V1`，密钥 `sha256("gonc-lan-discovery-v1" ‖ key)`
-- 4 个 MQTT broker、6 个 STUN 服务器清单与 gonc 相同
+- 4 个 MQTT broker、6 个 STUN 服务器**默认清单**与 gonc 相同（可环境变量覆盖，见 §3.1）
 
 客户端间协议的规范真源在 `p2premote-punch/protocol/client-client/`（README + JSON Schema），
 字段变更需三端（Go/Rust/Android）对齐。
@@ -165,9 +174,9 @@ pub fn start_udp_tunnel_json(input: &str) -> String   // JSON 便捷版 ×3
 
 - **主路径 = 动态库交付（2026-09-11 决策）**：所有平台统一 cdylib + C ABI
   （`dist/windows-x86_64/*.dll`、`dist/linux-x86_64-gnu.2.27/*.so`），主客户端
-  C 接口调用，工具链与客户端彻底解耦。备选 = 源码集成（path 依赖，可关 `ffi`
-  feature）与 std-external 静态库。
-- **备选 = 静态库交付**：`cargo build --release --lib --target *-musl` 产自包含 `.a`；
+  C 接口调用，工具链与客户端彻底解耦。
+- **备选 1 = 源码集成**：path 依赖（可关 `ffi` feature 去掉 C ABI 导出）。
+- **备选 2 = 静态库交付**：`cargo build --release --lib --target *-musl` 产自包含 `.a`；
   供 Rust 宿主必须先 `scripts/strip-rustlib.sh` 剥离 rustlib，且两端同版本工具链。
 - 工具链锁定 1.94.1（与 p2premote-desktop-client 一致）。
 - 日志默认静默，`P2PREMOTE_PUNCH_LOG=1` 输出到 stderr。

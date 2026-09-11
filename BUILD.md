@@ -4,11 +4,10 @@
 Go 运行时与 musl 静态链接的运行期错误；与 Go 端（Android gomobile AAR / Go
 CLI / 桌面客户端 Go 库）**字节级协议互通**。
 
-## 与 desktop-client 对接（源码集成，主路径）
+## 备选 A：与 desktop-client 源码集成（Linux 过渡现状）
 
-客户端 Linux 链路以**源码 path 依赖**方式集成本仓库（社区标准做法：单一
-Rust 世界，不存在 staticlib 双 std 符号冲突；仅 Linux，Windows/macOS 构建不受
-影响，仍用 Go DLL/dylib）：
+**主路径已切换为全平台 cdylib（见下"动态库交付"节）**；源码 path 依赖是 Linux
+当前的过渡现状（单一 Rust 世界，无 staticlib 双 std 冲突）：
 
 - `core/Cargo.toml`：`p2premote-punch = { path = "../../p2premote-punch-rs" }`。
 - `core/src/gonc_ffi.rs` 顶部一行 `#[cfg(target_os = "linux")] use p2premote_punch as _;`
@@ -92,8 +91,8 @@ GetWindowsWgPeerStatus SetWindowsWgPeerAllowed`。另有链接期冲突标记
 - **Windows/macOS userspace WireGuard 未移植**（boringtun+wintun/utun+smoltcp
   为后续任务）：`StartUserspaceWgPeer` 等函数返回与 Go 在 Linux 上相同的
   unsupported 错误；`GenerateWgKeypair` 同样返回错误（与 Go 在 Linux 上一致）；
-  caps 中 `userspace_wg=false`。**桌面客户端 win/mac 版继续使用现有 Go
-  DLL/dylib。**
+  caps 中 `userspace_wg=false`。桌面客户端 win/mac 的 WG 数据面在分工终态下
+  继续由 go120 wgonly DLL/dylib 承担（决策记录见 ROADMAP §6）。
 - **TCP 打洞已移植（2026-09-11）**：`StartUdpTunnel` 的 `network` 接受 `tcp4`。
   P2P 传输为 TCP 时，本地前转仍是 UDP 口（WG 消费方即 UDP，FFI JSON 契约零变更），
   报文以 2 字节小端长度帧（gonc FramedConn 语义）在打洞出的 TCP 流上承载。
@@ -140,9 +139,9 @@ C 宿主冒烟：`zig cc -target x86_64-linux-musl c-tests/harness.c <full .a> -
 ## 测试
 
 ```bash
-cargo test                       # 18 单测 + 18 FFI ABI 测试（离线）
-cargo test --lib -- --ignored    # 实网测试：STUN 探测、MQTT Exchange、
-                                 # Rust↔Rust 全链路打洞隧道（走公网 broker/STUN）
+cargo test                       # 23 lib 单测 + 18 FFI ABI 测试（离线）
+cargo test --lib -- --ignored    # 实网测试：STUN 探测（v4/v6）、MQTT Exchange、
+                                 # Rust↔Rust 全链路隧道（udp4/tcp4/udp6/tcp6）
 
 # 与 Go 的跨实现互通向量（Go 工具链运行）
 go run tests/go-vector/main.go   # 生成向量；Rust 单测内置断言逐字节一致
@@ -152,10 +151,14 @@ go run tests/go-vector/main.go   # 生成向量；Rust 单测内置断言逐字�
 cd go-interop
 go run . exchange <exmode> <token> <data>
 go run . tunnel <active|passive> <token> [wgPort]
+go run . punch-tcp <token> [tcp4|tcp6]      # 底层 Easy_P2P_MPWithOptions 直打
+go run . wait <token> / hello <token> [app] [param]   # 唤醒互通
 #   Rust 侧:
 cargo run --release --example interop -- exchange <exmode> <token> <data>
 cargo run --release --example interop -- tunnel <active|passive> <token> [wgPort]
-#   两端用同一 token，一端 active 一端 passive；交换/打洞/转发全链路互通
+cargo run --release --example interop -- punch-tcp <token> [tcp4|tcp6]
+cargo run --release --example interop -- wait <token> / hello <token> [app] [param]
+#   两端用同一 token；exchange/tunnel 一端 active 一端 passive
 
 # musl 产物 C 冒烟（WSL 实测通过）
 zig cc -target x86_64-linux-musl c-tests/harness.c \
@@ -176,4 +179,6 @@ wsl -d Debian -- /path/to/harness-linux
 | musl 静态库符号核对（19 导出） | 全部导出 |
 | WSL(Debian) C harness 冒烟 + iptables 子网路由实跑（建链/规则/引用计数/清理） | 全过 |
 | **客户端实链验证（2026-09-08，WSL Debian）**：源码 path 依赖集成，`p2premote-service`/`p2premote-cli` 以 musl + 默认 thin-LTO 构建 | 构建成功；二进制可运行、FFI 符号在位、`NEEDED` 为 0（完全静态、无 glibc）。产物路径（剥离版 `.a` + whole-archive、LTO off）另经最小 Rust 宿主验证 `GetWgCapabilities` 返回正确 JSON |
-| aarch64 musl 产物（WSL 交叉构建 + 剥离） | 21 个导出符号完整 |
+| aarch64 musl 产物（WSL 交叉构建 + 剥离） | 21 个导出符号完整（注：历史计数口径；当前 ABI 全集为 22 符号，见上文 ABI 清单） |
+| **gonc 实网互通（2026-09-11）**：tcp4 / tcp6（hard×easy，+100 + RSP 生日悖论）/ 唤醒双向 / 单 broker 参数覆盖 | 全通 |
+| **动态库（2026-09-11）**：win .dll P/Invoke 实测；linux .so（GLIBC_2.25 上限）在 18.04.6 chroot dlopen 调用 | 全通 |
