@@ -93,6 +93,48 @@ pub async fn connected_udp_wildcard(local: SocketAddr, remote: SocketAddr) -> io
     connected_udp(wildcard, remote).await
 }
 
+/// netx.ControlTCP listen side: SO_REUSEADDR (+ SO_REUSEPORT on unix) TCP
+/// listener for simultaneous-open punching.
+pub fn listen_tcp(bind: SocketAddr, reuse: bool) -> io::Result<TcpListener> {
+    let domain = if bind.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    if reuse {
+        socket.set_reuse_address(true)?;
+        #[cfg(unix)]
+        socket.set_reuse_port(true)?;
+    }
+    if bind.is_ipv6() {
+        // Go's net package keeps "tcp6" listeners v6-only.
+        socket.set_only_v6(true)?;
+    }
+    socket.bind(&socket2::SockAddr::from(bind))?;
+    socket.listen(1024)?;
+    Ok(TcpListener::from(socket))
+}
+
+/// tryConnect dial path: optional local bind, optionally with the ControlTCP
+/// reuse options (same-port dial beside the listener).
+pub async fn connect_tcp_bind(
+    target: SocketAddr,
+    bind: Option<SocketAddr>,
+    reuse: bool,
+) -> io::Result<tokio::net::TcpStream> {
+    let socket = if target.is_ipv6() {
+        tokio::net::TcpSocket::new_v6()
+    } else {
+        tokio::net::TcpSocket::new_v4()
+    }?;
+    if reuse {
+        let _ = socket.set_reuseaddr(true);
+        #[cfg(unix)]
+        let _ = socket.set_reuseport(true);
+    }
+    if let Some(bind) = bind {
+        socket.bind(bind)?;
+    }
+    socket.connect(target).await
+}
+
 /// GetFreePort: a port bindable by both TCP and UDP.
 pub fn get_free_port() -> io::Result<u16> {
     for _ in 0..100 {
@@ -170,5 +212,16 @@ mod tests {
     fn free_port_is_bindable() {
         let port = get_free_port().unwrap();
         assert!(port > 0);
+    }
+
+    #[test]
+    fn tcp_listener_and_same_port_dial() {
+        // ControlTCP semantics: listener + a dial bound to the same local port
+        // must coexist (REUSEADDR/REUSEPORT).
+        let port = get_free_port().unwrap();
+        let bind: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+        let _listener = listen_tcp(bind, true).expect("listen_tcp with reuse");
+        // Binding another listener on the same port with reuse must also work.
+        let _listener2 = listen_tcp(bind, true).expect("second listener with reuse");
     }
 }

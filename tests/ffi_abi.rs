@@ -44,10 +44,11 @@ fn start_udp_tunnel_rejects_relay() {
 }
 
 #[test]
-fn start_udp_tunnel_rejects_tcp_network() {
-    let raw = call(StartUdpTunnel, r#"{"token":"tok","network":"tcp4","remote_target_port":51820}"#);
+fn start_udp_tunnel_rejects_unknown_network() {
+    let raw = call(StartUdpTunnel, r#"{"token":"tok","network":"tcp9","remote_target_port":51820}"#);
     assert!(!json_bool(&raw, "ok"));
-    assert_ne!(json_str(&raw, "error"), "\"\"");
+    let err = json_str(&raw, "error");
+    assert!(err.contains("unsupported network"), "unexpected error: {}", err);
 }
 
 #[test]

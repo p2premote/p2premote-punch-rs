@@ -66,27 +66,27 @@ impl PunchCtx {
 }
 
 /// Cancellation latch equivalent to ctxStopPunching.
-struct StopFlag {
+pub(crate) struct StopFlag {
     notified: tokio::sync::Notify,
     stopped: AtomicBool,
 }
 
 impl StopFlag {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         StopFlag {
             notified: tokio::sync::Notify::new(),
             stopped: AtomicBool::new(false),
         }
     }
-    fn stop(&self) {
+    pub(crate) fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.notified.notify_waiters();
         self.notified.notify_one();
     }
-    fn is_stopped(&self) -> bool {
+    pub(crate) fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::SeqCst)
     }
-    async fn wait(&self) {
+    pub(crate) async fn wait(&self) {
         if self.is_stopped() {
             return;
         }
@@ -443,7 +443,7 @@ async fn finalize_conn(
     })
 }
 
-fn print_p2p_info(info: &P2PAddressInfo) {
+pub(crate) fn print_p2p_info(info: &P2PAddressInfo) {
     if info.local_lan == info.local_nat {
         crate::p2plog!("  - {:<14}: {} (NAT-{})", "Local Address", info.local_lan, info.local_nat_type);
     } else {

@@ -7,6 +7,7 @@ pub mod lan;
 pub mod mqtt_signal;
 pub mod netx;
 pub mod p2p;
+pub mod punch_tcp;
 pub mod punch_udp;
 pub mod stun;
 pub mod udp_tunnel;

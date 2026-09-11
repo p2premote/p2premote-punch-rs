@@ -8,6 +8,7 @@ use std::time::Duration;
 use super::candidates::{self, ExchangeAddressPayload, P2PAddressInfo, P2PAttemptDetails};
 use super::crypto::{self, EcdhKeyPair};
 use super::mqtt_signal::{self, MqttSignalSession};
+use super::punch_tcp;
 use super::punch_udp;
 use super::stun;
 use super::netx;
@@ -28,9 +29,24 @@ pub struct P2PSessionContext {
     pub remote_caps: Vec<String>,
 }
 
+/// Transport-agnostic punched connection: UDP socket or TCP stream.
+pub enum P2PConn {
+    Udp(punch_udp::PunchedConn),
+    Tcp(punch_tcp::TcpPunchedConn),
+}
+
+impl P2PConn {
+    pub fn remote_addr(&self) -> String {
+        match self {
+            P2PConn::Udp(conn) => conn.remote_addr().to_string(),
+            P2PConn::Tcp(conn) => conn.remote.to_string(),
+        }
+    }
+}
+
 /// A punched P2P connection plus the diagnostics the FFI reports.
 pub struct P2PConnInfo {
-    pub conn: punch_udp::PunchedConn,
+    pub conn: P2PConn,
     #[allow(dead_code)]
     pub shared_key: [u8; 32],
     #[allow(dead_code)]
@@ -332,9 +348,9 @@ pub fn generate_random_ports(count: usize) -> Vec<u16> {
 
 use std::collections::HashSet;
 
-/// Easy_P2P_MPWithOptions: full traversal pipeline. The FFI path always uses
-/// network "udp4" (validated in StartUDPTunnel), so only UDP candidates exist;
-/// TCP traversal is unreachable and intentionally absent from this port.
+/// Easy_P2P_MPWithOptions: full traversal pipeline. TCP candidates
+/// (tcp4/tcp6) go to the TCP simultaneous-open state machine, everything else
+/// to the UDP puncher.
 pub async fn easy_p2p_mp_with_options(
     scope: &Scope,
     network: &str,
@@ -389,15 +405,29 @@ pub async fn easy_p2p_mp_with_options(
         // FFI path: relay candidates never exist (allow_relay=false).
         round += 1;
 
-        let outcome = punch_udp::auto_p2p_udp_nat_traversal(
-            scope,
-            &p2p_info.network,
-            session_uid,
-            p2p_info,
-            &sess_ctx,
-            round,
-        )
-        .await;
+        let outcome = if p2p_info.network.starts_with("tcp") {
+            punch_tcp::auto_p2p_tcp_nat_traversal(
+                scope,
+                &p2p_info.network,
+                session_uid,
+                p2p_info,
+                &sess_ctx,
+                round,
+            )
+            .await
+            .map(|(conn, is_role_client)| (P2PConn::Tcp(conn), is_role_client))
+        } else {
+            punch_udp::auto_p2p_udp_nat_traversal(
+                scope,
+                &p2p_info.network,
+                session_uid,
+                p2p_info,
+                &sess_ctx,
+                round,
+            )
+            .await
+            .map(|(conn, is_role_client)| (P2PConn::Udp(conn), is_role_client))
+        };
 
         match outcome {
             Ok((punched, is_role_client)) => {
@@ -406,7 +436,7 @@ pub async fn easy_p2p_mp_with_options(
                 }
                 networks_used.push(p2p_info.network.clone());
                 let conn_info = P2PConnInfo {
-                    peer_address: punched.remote_addr().to_string(),
+                    peer_address: punched.remote_addr(),
                     conn: punched,
                     shared_key: sess_ctx.shared_key,
                     is_client: role == 1,

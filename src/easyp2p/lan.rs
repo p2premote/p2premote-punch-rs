@@ -16,7 +16,8 @@ use tokio::sync::mpsc;
 
 use super::candidates::P2PAddressInfo;
 use super::netx;
-use super::p2p::P2PSessionContext;
+use super::p2p::{P2PConn, P2PSessionContext};
+use super::punch_tcp;
 use super::punch_udp;
 use super::{P2pError, Result, Scope};
 
@@ -561,7 +562,8 @@ async fn lan_responder(
 // ============ Easy_P2P_LAN ============
 
 /// easyP2PLAN: multicast discovery → punch (round=0 skips MQTT round sync).
-/// The FFI always negotiates the "udp" transport; "tcp" is rejected.
+/// The negotiated transport (udp preferred, tcp if both prefer it) selects
+/// which punch state machine runs.
 pub async fn easy_p2p_lan(
     scope: &Scope,
     session_key: &str,
@@ -572,13 +574,7 @@ pub async fn easy_p2p_lan(
     crate::p2plog!("=== LAN Discovery Mode ===");
     let result = lan_discover(scope, session_key, transport_pref, timeout, passive).await?;
 
-    if result.transport != "udp" {
-        return Err(P2pError::msg(format!(
-            "LAN transport {} is not supported by this build (udp only)",
-            result.transport
-        )));
-    }
-
+    let network = if result.transport == "tcp" { "tcp4" } else { "udp4" };
     let local_addr = netx::join_host_port(&result.local_ip, result.local_port);
     let remote_addr = netx::join_host_port(&result.remote_ip, result.remote_port);
     let shared_key = {
@@ -588,7 +584,7 @@ pub async fn easy_p2p_lan(
     };
 
     let p2p_info = P2PAddressInfo {
-        network: "udp4".to_string(),
+        network: network.to_string(),
         local_lan: local_addr.clone(),
         local_nat: local_addr.clone(),
         local_nat_type: "easy".to_string(),
@@ -612,23 +608,23 @@ pub async fn easy_p2p_lan(
         remote_caps: Vec::new(),
     };
 
-    let (conn, is_client) = punch_udp::auto_p2p_udp_nat_traversal(
-        scope,
-        "udp4",
-        session_key,
-        &p2p_info,
-        &sess_ctx,
-        0,
-    )
-    .await
+    let (conn, is_client) = if network == "tcp4" {
+        punch_tcp::auto_p2p_tcp_nat_traversal(scope, network, session_key, &p2p_info, &sess_ctx, 0)
+            .await
+            .map(|(conn, role)| (P2PConn::Tcp(conn), role))
+    } else {
+        punch_udp::auto_p2p_udp_nat_traversal(scope, network, session_key, &p2p_info, &sess_ctx, 0)
+            .await
+            .map(|(conn, role)| (P2PConn::Udp(conn), role))
+    }
     .map_err(|e| P2pError::msg(format!("LAN traversal: {}", e)))?;
 
     Ok(super::p2p::P2PConnInfo {
-        peer_address: conn.remote_addr().to_string(),
+        peer_address: conn.remote_addr(),
         conn,
         shared_key,
         is_client,
-        networks_used: vec!["udp4".to_string()],
+        networks_used: vec![network.to_string()],
         local_nat_type: p2p_info.local_nat_type.clone(),
         remote_nat_type: p2p_info.remote_nat_type.clone(),
         local_lan: p2p_info.local_lan.clone(),

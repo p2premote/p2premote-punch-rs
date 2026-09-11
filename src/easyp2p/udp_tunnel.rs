@@ -13,8 +13,7 @@ use super::crypto;
 use super::lan;
 use super::mqtt_signal::{self, MqttSignalSession};
 use super::netx;
-use super::p2p::{self, EasyP2PMPOptions, P2PConnInfo};
-use super::punch_udp::PunchedConn;
+use super::p2p::{self, EasyP2PMPOptions, P2PConn, P2PConnInfo};
 use super::{CancelToken, P2pError, Scope, EXMODE_MUTUAL, EXMODE_WAIT_ONLY};
 use crate::types::{UdpTunnelInput, UdpTunnelResult};
 
@@ -304,7 +303,8 @@ async fn establish_udp_tunnel_p2p(
 
     // LAN traversal.
     let lan_scope = scope.child(scope.bounded_timeout(Duration::from_secs(20)));
-    let lan_result = lan::easy_p2p_lan(&lan_scope, token, "udp", lan_scope.remaining(), role_hint == "passive").await;
+    let lan_transport = if network == "tcp4" { "tcp" } else { "udp" };
+    let lan_result = lan::easy_p2p_lan(&lan_scope, token, lan_transport, lan_scope.remaining(), role_hint == "passive").await;
     let local_success = lan_result.is_ok();
     let local_outcome = TraversalOutcome {
         version: 1,
@@ -365,7 +365,7 @@ pub async fn start_udp_tunnel(req: UdpTunnelInput, budget: Duration) -> Result<S
         return Err(StartError::plain("role_hint is required for coordinated UDP tunnel capabilities"));
     }
     let network = if req.network.is_empty() { "udp4" } else { req.network.as_str() };
-    if network != "udp4" {
+    if network != "udp4" && network != "tcp4" {
         return Err(StartError::plain(format!("unsupported network for udp tunnel: {}", network)));
     }
     if req.allow_relay {
@@ -462,81 +462,172 @@ async fn dial_udp_forward(
     Err(last_err.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "udp forward bind failed")))
 }
 
-/// copyPackets ×2: local WG endpoint ↔ punched P2P socket. The local socket
+/// copyPackets ×2: local WG endpoint ↔ punched P2P connection. The local side
+/// is always a UDP socket (the WG endpoint is UDP); when the P2P transport is
+/// TCP the datagrams are carried over the stream with a 2-byte little-endian
+/// length frame per datagram (netx.FramedConn semantics). The local socket
 /// only accepts packets sourced from the fixed target (BoundUDPConn filter) —
 /// a connected socket would surface async ECONNREFUSED from stray ICMP.
 fn spawn_forwarders(
     local: UdpSocket,
-    p2p: PunchedConn,
+    p2p_conn: P2PConn,
     target_addr: SocketAddr,
     token: Arc<CancelToken>,
 ) {
     let local = Arc::new(local);
-    // local → p2p
-    {
-        let local = local.clone();
-        let p2p = p2p.clone();
-        let token = token.clone();
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; netx::UDP_FORWARD_BUF];
-            loop {
-                tokio::select! {
-                    _ = token.cancelled() => break,
-                    received = local.recv_from(&mut buf) => {
-                        match received {
-                            Ok((n, src)) => {
-                                if src != target_addr {
-                                    crate::p2plog!("fwd local→p2p dropped {} bytes from {} (target {})", n, src, target_addr);
-                                    continue;
+    match p2p_conn {
+        P2PConn::Udp(p2p) => {
+            // local → p2p
+            {
+                let local = local.clone();
+                let p2p = p2p.clone();
+                let token = token.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; netx::UDP_FORWARD_BUF];
+                    loop {
+                        tokio::select! {
+                            _ = token.cancelled() => break,
+                            received = local.recv_from(&mut buf) => {
+                                match received {
+                                    Ok((n, src)) => {
+                                        if src != target_addr {
+                                            crate::p2plog!("fwd local→p2p dropped {} bytes from {} (target {})", n, src, target_addr);
+                                            continue;
+                                        }
+                                        crate::p2plog!("fwd local→p2p forwarding {} bytes from {}", n, src);
+                                        if let Err(err) = p2p.send(&buf[..n]).await {
+                                            crate::p2plog!("fwd local→p2p send error: {}", err);
+                                            break;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        if err.kind() == std::io::ErrorKind::ConnectionReset {
+                                            continue; // stray ICMP on Windows
+                                        }
+                                        crate::p2plog!("fwd local→p2p recv error: {}", err);
+                                        break;
+                                    }
                                 }
-                                crate::p2plog!("fwd local→p2p forwarding {} bytes from {}", n, src);
-                                if let Err(err) = p2p.send(&buf[..n]).await {
-                                    crate::p2plog!("fwd local→p2p send error: {}", err);
-                                    break;
-                                }
-                            }
-                            Err(err) => {
-                                if err.kind() == std::io::ErrorKind::ConnectionReset {
-                                    continue; // stray ICMP on Windows
-                                }
-                                crate::p2plog!("fwd local→p2p recv error: {}", err);
-                                break;
                             }
                         }
                     }
-                }
+                });
             }
-        });
-    }
-    // p2p → local
-    {
-        let local = local.clone();
-        let token = token.clone();
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; netx::UDP_FORWARD_BUF];
-            loop {
-                tokio::select! {
-                    _ = token.cancelled() => break,
-                    received = p2p.recv(&mut buf) => {
-                        match received {
-                            Ok(n) => {
-                                crate::p2plog!("fwd p2p→local forwarding {} bytes to {}", n, target_addr);
-                                if let Err(err) = local.send_to(&buf[..n], target_addr).await {
-                                    crate::p2plog!("fwd p2p→local send error: {}", err);
-                                    break;
+            // p2p → local
+            {
+                let local = local.clone();
+                let token = token.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; netx::UDP_FORWARD_BUF];
+                    loop {
+                        tokio::select! {
+                            _ = token.cancelled() => break,
+                            received = p2p.recv(&mut buf) => {
+                                match received {
+                                    Ok(n) => {
+                                        crate::p2plog!("fwd p2p→local forwarding {} bytes to {}", n, target_addr);
+                                        if let Err(err) = local.send_to(&buf[..n], target_addr).await {
+                                            crate::p2plog!("fwd p2p→local send error: {}", err);
+                                            break;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        if err.kind() == std::io::ErrorKind::ConnectionReset {
+                                            continue; // stray ICMP on Windows
+                                        }
+                                        crate::p2plog!("fwd p2p→local recv error: {}", err);
+                                        break;
+                                    }
                                 }
-                            }
-                            Err(err) => {
-                                if err.kind() == std::io::ErrorKind::ConnectionReset {
-                                    continue; // stray ICMP on Windows
-                                }
-                                crate::p2plog!("fwd p2p→local recv error: {}", err);
-                                break;
                             }
                         }
                     }
-                }
+                });
             }
-        });
+        }
+        P2PConn::Tcp(conn) => {
+            let (mut rd, mut wr) = conn.stream.into_split();
+            // local → p2p: datagram → length-framed stream write
+            {
+                let local = local.clone();
+                let token = token.clone();
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    let mut buf = vec![0u8; netx::UDP_FORWARD_BUF];
+                    let mut frame = Vec::with_capacity(netx::UDP_FORWARD_BUF + 2);
+                    loop {
+                        tokio::select! {
+                            _ = token.cancelled() => break,
+                            received = local.recv_from(&mut buf) => {
+                                match received {
+                                    Ok((n, src)) => {
+                                        if src != target_addr {
+                                            crate::p2plog!("fwd local→p2p(tcp) dropped {} bytes from {} (target {})", n, src, target_addr);
+                                            continue;
+                                        }
+                                        frame.clear();
+                                        frame.extend_from_slice(&(n as u16).to_le_bytes());
+                                        frame.extend_from_slice(&buf[..n]);
+                                        if let Err(err) = wr.write_all(&frame).await {
+                                            crate::p2plog!("fwd local→p2p(tcp) write error: {}", err);
+                                            break;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        if err.kind() == std::io::ErrorKind::ConnectionReset {
+                                            continue;
+                                        }
+                                        crate::p2plog!("fwd local→p2p(tcp) recv error: {}", err);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            // p2p → local: length-framed stream read → datagram
+            {
+                let local = local;
+                let token = token;
+                tokio::spawn(async move {
+                    use tokio::io::AsyncReadExt;
+                    let mut hdr = [0u8; 2];
+                    let mut payload = vec![0u8; u16::MAX as usize];
+                    loop {
+                        tokio::select! {
+                            _ = token.cancelled() => break,
+                            read = rd.read_exact(&mut hdr) => {
+                                if read.is_err() {
+                                    crate::p2plog!("fwd p2p→local(tcp) header read error");
+                                    break;
+                                }
+                                let len = u16::from_le_bytes(hdr) as usize;
+                                if len == 0 {
+                                    continue; // EOF frame is unused on this path
+                                }
+                                let mut ok = true;
+                                tokio::select! {
+                                    _ = token.cancelled() => break,
+                                    read = rd.read_exact(&mut payload[..len]) => {
+                                        if let Err(err) = read {
+                                            crate::p2plog!("fwd p2p→local(tcp) read error: {}", err);
+                                            ok = false;
+                                        }
+                                    }
+                                }
+                                if !ok {
+                                    break;
+                                }
+                                if let Err(err) = local.send_to(&payload[..len], target_addr).await {
+                                    crate::p2plog!("fwd p2p→local(tcp) send error: {}", err);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
     }
 }
