@@ -180,6 +180,9 @@ pub fn start_udp_tunnel_json(input: &str) -> String   // JSON 便捷版 ×3
 worktree 相关注意：`dist/`、`target/` 均被 gitignore，worktree 内首次构建需重新编译；
 预构建 `.a` 只存在于 master 工作区 `dist/`。
 
-## 9. 后续计划
+## 9. 配套文档
 
-复刻路线图（阶段划分、验收标准、老系统兼容矩阵、风险与待决策问题）见 **[ROADMAP.md](ROADMAP.md)**。
+| 文档 | 内容 |
+|---|---|
+| [GONC_DESIGN.md](GONC_DESIGN.md) | **gonc 打洞逻辑详细设计文档**：全部穿透流程的状态机/时序/报文格式/常量（STUN 探测、MQTT 信令、地址交换、候选与角色、UDP/TCP 打洞、LAN 直连与 probe、SOCKS5 中继、唤醒、CLI 竞速仲裁、netx 原语），复刻时的协议行为参照 |
+| [ROADMAP.md](ROADMAP.md) | 复刻路线图：阶段划分、验收标准、老系统兼容矩阵、风险与待决策问题 |
