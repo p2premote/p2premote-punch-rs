@@ -131,14 +131,18 @@ gonc 参照：`p2p.go:2393-2613`（`nat-exchange-wait/<uid>` topic、`SYN@tid`/`
 （日志确认 "via 1 MQTT servers"）与 Go 默认全 broker 互通打洞成功——参数覆盖
 生效且不破坏互通。
 
-### P5 老系统交付与全量回归
+### P5 老系统交付与全量回归（部分完成，2026-09-11）
 
 任务：
-1. Ubuntu 18.04：musl `.a` 与源码集成两条路径实机冒烟（P0 环境上执行）
-2. Win7：按 P0 调研结论落地 **Rust 打洞库**交付物（可能需要独立工具链 profile 与
-   win7 target；WG 数据面由 Go go120 wgonly DLL 承担，不在本项目范围）
-3. 全回归：离线 FFI 测试 + c-tests + go-interop 全矩阵（udp4/tcp4/v6/lan/exchange）
-   + 实网 live tests
+1. ✅ Ubuntu 18.04 实机冒烟（2026-09-11）：WSL 交叉构建 musl 静态 interop 二进制
+   （rustup 1.94.1 + musl-gcc + `RUSTFLAGS='-C linker=musl-gcc'`），在 18.04.6
+   rootfs chroot 内与 Windows 上的 Go 完成 **MQTT 唤醒互通**（DNS/TLS/MQTT 全链路），
+   `ldd` 确认静态链接
+2. ⏳ Win7 交付物：按 P0 结论需 nightly + `-Z build-std` 通道，待需要时搭建
+3. ⏳ 全回归矩阵：2026-09-11 已覆盖 udp4/tcp4/udp6 的 Rust↔Rust FFI 全链路、
+   tcp4/tcp6/唤醒的 Go↔Rust 互通、18.04 冒烟；**跨 NAT easy×easy +100 同时打开
+   路径**需双机环境，待有条件时补验
+4. ⏳ musl `.a` 交付物重产（master `dist/` 仍是 udp4-only 旧版）
 
 验收：目标老系统冒烟通过；BUILD.md 更新交付矩阵。
 
