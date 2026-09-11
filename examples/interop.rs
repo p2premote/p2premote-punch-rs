@@ -3,9 +3,12 @@
 //! Usage:
 //!   cargo run --release --example interop -- exchange <exmode> <token> <senddata>
 //!   cargo run --release --example interop -- tunnel <active|passive> <token> [wgPort]
+//!   cargo run --release --example interop -- punch-tcp <token>
 //!
-//! Mirrors the Go harness in p2premote-punch/tmp-interop so the two
-//! implementations can be pointed at each other over the real network.
+//! Mirrors the Go harness in go-interop/ so the two implementations can be
+//! pointed at each other over the real network. punch-tcp runs the raw TCP
+//! punch (library level, no local forwarder) and does a ping/ACK echo over
+//! the punched stream — the Go side is `go run . punch-tcp <token>`.
 
 use std::ffi::{CStr, CString};
 use std::net::UdpSocket;
@@ -31,9 +34,81 @@ fn main() {
     match args[1].as_str() {
         "exchange" => exchange(&args[2..]),
         "tunnel" => tunnel(&args[2..]),
+        "punch-tcp" => punch_tcp(&args[2..]),
         other => {
             eprintln!("unknown mode {}", other);
             std::process::exit(2);
+        }
+    }
+}
+
+/// Raw TCP punch against the Go harness (`go run . punch-tcp <token>`): the
+/// client side sends "ping\n", the server side echoes "ACK-ping\n".
+fn punch_tcp(args: &[String]) {
+    let token = args[0].clone();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            use p2premote_punch::easyp2p::p2p::{easy_p2p_mp_with_options, EasyP2PMPOptions, P2PConn};
+            use p2premote_punch::easyp2p::Scope;
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let scope = Scope::from_timeout(Duration::from_secs(110));
+            let info = match easy_p2p_mp_with_options(&scope, "tcp4", &token, EasyP2PMPOptions::default()).await {
+                Ok(info) => info,
+                Err(err) => {
+                    println!("PUNCH_FAILED error={}", err);
+                    return;
+                }
+            };
+            println!(
+                "PUNCHED peer={} is_client={} networks={:?} local_nat={} remote_nat={}",
+                info.peer_address, info.is_client, info.networks_used, info.local_nat_type, info.remote_nat_type
+            );
+            let conn = match info.conn {
+                P2PConn::Tcp(conn) => conn,
+                _ => {
+                    println!("PUNCH_FAILED error=non-tcp connection");
+                    return;
+                }
+            };
+            let (mut rd, mut wr) = conn.stream.into_split();
+            if info.is_client {
+                if wr.write_all(b"ping\n").await.is_err() {
+                    println!("PUNCH_FAILED error=client write failed");
+                    return;
+                }
+                match read_line(&mut rd).await {
+                    Some(line) => println!("PONG {:?}", String::from_utf8_lossy(&line)),
+                    None => println!("PUNCH_FAILED error=client read timeout"),
+                }
+            } else {
+                match read_line(&mut rd).await {
+                    Some(line) => {
+                        println!("RECV {:?}", String::from_utf8_lossy(&line));
+                        let _ = wr.write_all(b"ACK-ping\n").await;
+                    }
+                    None => println!("PUNCH_FAILED error=server read timeout"),
+                }
+            }
+        });
+}
+
+async fn read_line(rd: &mut tokio::net::tcp::OwnedReadHalf) -> Option<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut line: Vec<u8> = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), rd.read(&mut byte)).await {
+            Ok(Ok(1)) => {
+                if byte[0] == b'\n' {
+                    return Some(line);
+                }
+                line.push(byte[0]);
+            }
+            _ => return None,
         }
     }
 }

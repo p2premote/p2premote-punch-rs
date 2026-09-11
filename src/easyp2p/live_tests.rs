@@ -75,22 +75,40 @@ async fn exchange_rust_to_rust() {
     assert_eq!(b, "hello-from-active");
 }
 
-/// Full Rust↔Rust UDP tunnel through the exported C ABI, exactly like the
+/// Full Rust↔Rust tunnel through the exported C ABI, exactly like the
 /// desktop client drives it: two roles, traversal negotiation, hole punching
 /// (same-host peers land in the "easy/easy same-LAN" candidate), local
 /// forwarders, and payload round-trip through both forward ports.
 #[tokio::test]
 #[ignore = "hits real MQTT/STUN servers"]
 async fn udp_tunnel_rust_to_rust() {
+    tunnel_roundtrip("udp4", 52820).await;
+}
+
+/// Same full-chain round-trip as `udp_tunnel_rust_to_rust` but the P2P
+/// transport is TCP4: WG datagrams travel length-framed over the punched
+/// stream.
+#[tokio::test]
+#[ignore = "hits real MQTT/STUN servers"]
+async fn tcp_tunnel_rust_to_rust() {
+    tunnel_roundtrip("tcp4", 52840).await;
+}
+
+async fn tunnel_roundtrip(network: &str, echo_port: u16) {
     use crate::types::UdpTunnelResult;
 
-    let token = format!("rs-tunnel-{}", &crypto::calculate_md5(&format!("{:?}", std::time::SystemTime::now()))[..8]);
+    let wg_port = echo_port + 1;
+    let token = format!(
+        "rs-tunnel-{}-{}",
+        network,
+        &crypto::calculate_md5(&format!("{:?}", std::time::SystemTime::now()))[..8]
+    );
 
-    let run_side = |role: &'static str, target_port: u16, token: String| {
+    let run_side = |role: &'static str, target_port: u16, token: String, network: String| {
         tokio::task::spawn_blocking(move || {
             let input = format!(
-                r#"{{"token":"{}","role_hint":"{}","traversal_mode":"auto","network":"udp4","timeout_secs":60,"remote_target_port":{}}}"#,
-                token, role, target_port
+                r#"{{"token":"{}","role_hint":"{}","traversal_mode":"auto","network":"{}","timeout_secs":60,"remote_target_port":{}}}"#,
+                token, role, network, target_port
             );
             let c = std::ffi::CString::new(input).unwrap();
             let raw = unsafe { crate::StartUdpTunnel(c.as_ptr()) };
@@ -101,9 +119,10 @@ async fn udp_tunnel_rust_to_rust() {
         })
     };
 
-    // Echo server on the active side's WireGuard port (52820): replies ACK-*.
+    // Echo server on the active side's WireGuard port: replies ACK-*.
     let echo = tokio::spawn(async move {
-        let socket = tokio::net::UdpSocket::bind("127.0.0.1:52820").await.expect("bind 52820");
+        let bind_to = format!("127.0.0.1:{}", echo_port);
+        let socket = tokio::net::UdpSocket::bind(&bind_to).await.expect("bind echo port");
         let mut buf = vec![0u8; 2048];
         loop {
             let (n, src) = tokio::time::timeout(Duration::from_secs(90), socket.recv_from(&mut buf))
@@ -111,7 +130,7 @@ async fn udp_tunnel_rust_to_rust() {
                 .expect("echo timeout")
                 .expect("echo recv");
             let data = String::from_utf8_lossy(&buf[..n]).into_owned();
-            eprintln!("[echo-52820] got {:?} from {}", data, src);
+            eprintln!("[echo-{}] got {:?} from {}", echo_port, data, src);
             let reply = format!("ACK-{}", data);
             socket.send_to(reply.as_bytes(), src).await.unwrap();
             if data == "ping" {
@@ -120,36 +139,37 @@ async fn udp_tunnel_rust_to_rust() {
         }
     });
 
-    let passive = run_side("passive", 52821, token.clone());
+    let passive = run_side("passive", wg_port, token.clone(), network.to_string());
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let active = run_side("active", 52820, token.clone());
+    let active = run_side("active", echo_port, token.clone(), network.to_string());
 
     let (active_out, active_result) = tokio::time::timeout(Duration::from_secs(100), active)
         .await
         .expect("active tunnel timeout")
         .expect("active join");
     assert!(active_result.ok, "active tunnel failed: {}", active_out);
-    eprintln!("active: forward={}:{} peer={} traversal={}",
-        active_result.local_forward_addr, active_result.local_forward_port, active_result.peer_endpoint, active_result.selected_traversal);
+    eprintln!("active: forward={}:{} peer={} traversal={} network={}",
+        active_result.local_forward_addr, active_result.local_forward_port, active_result.peer_endpoint, active_result.selected_traversal, active_result.network);
 
     let (passive_out, passive_result) = tokio::time::timeout(Duration::from_secs(100), passive)
         .await
         .expect("passive tunnel timeout")
         .expect("passive join");
     assert!(passive_result.ok, "passive tunnel failed: {}", passive_out);
-    eprintln!("passive: forward={}:{} peer={} traversal={}",
-        passive_result.local_forward_addr, passive_result.local_forward_port, passive_result.peer_endpoint, passive_result.selected_traversal);
+    eprintln!("passive: forward={}:{} peer={} traversal={} network={}",
+        passive_result.local_forward_addr, passive_result.local_forward_port, passive_result.peer_endpoint, passive_result.selected_traversal, passive_result.network);
 
     // The passive side acts as the WireGuard client: it sends from its WG
-    // endpoint port (52821 — the tunnel's remote_target_port, exactly how
-    // kernel WG behaves) through the forward port, and receives the echo back
-    // on the same port.
+    // endpoint port (the tunnel's remote_target_port, exactly how kernel WG
+    // behaves) through the forward port, and receives the echo back on the
+    // same port.
     let target: SocketAddr = format!("127.0.0.1:{}", passive_result.local_forward_port).parse().unwrap();
-    let wg_socket = tokio::net::UdpSocket::bind("127.0.0.1:52821").await.expect("bind 52821");
+    let bind_to = format!("127.0.0.1:{}", wg_port);
+    let wg_socket = tokio::net::UdpSocket::bind(&bind_to).await.expect("bind wg port");
     let mut got = String::new();
     for i in 0..20 {
         wg_socket.send_to(b"ping", target).await.unwrap();
-        eprintln!("[wg-52821] sent ping ({})", i + 1);
+        eprintln!("[wg-{}] sent ping ({})", wg_port, i + 1);
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while std::time::Instant::now() < deadline {
             let mut buf = vec![0u8; 2048];
@@ -158,7 +178,7 @@ async fn udp_tunnel_rust_to_rust() {
                 received = wg_socket.recv_from(&mut buf) => {
                     let (n, src) = received.expect("wg recv");
                     let data = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    eprintln!("[wg-52821] got {:?} from {}", data, src);
+                    eprintln!("[wg-{}] got {:?} from {}", wg_port, data, src);
                     // The peer's post-punch payload probe also lands here
                     // (WireGuard ignores it in production); keep waiting.
                     if data == "ACK-ping" {

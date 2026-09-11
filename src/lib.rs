@@ -5,7 +5,7 @@
 //! releases with [`FreeCString`]. See punchffi/main.go in the Go project for
 //! the contract this mirrors.
 
-mod easyp2p;
+pub mod easyp2p;
 mod handles;
 mod platform;
 mod runtime;
