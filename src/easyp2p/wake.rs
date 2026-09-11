@@ -95,7 +95,6 @@ impl HelloPayload {
 
 fn random_tid(len: usize) -> String {
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    use rand::Rng;
     let mut rng = rand::thread_rng();
     (0..len)
         .map(|_| CHARSET[rand::Rng::gen_range(&mut rng, 0..CHARSET.len())] as char)

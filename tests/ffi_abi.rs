@@ -9,7 +9,7 @@ fn call(f: unsafe extern "C" fn(*const c_char) -> *mut c_char, input: &str) -> S
     let c_input = CString::new(input).unwrap();
     let raw = unsafe { f(c_input.as_ptr()) };
     let out = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
-    unsafe { FreeCString(raw) };
+    FreeCString(raw);
     out
 }
 
@@ -64,9 +64,9 @@ fn start_udp_tunnel_rejects_unknown_traversal_mode() {
 
 #[test]
 fn null_input_returns_error_json() {
-    let raw = unsafe { StartUdpTunnel(std::ptr::null()) };
+    let raw = StartUdpTunnel(std::ptr::null());
     let out = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
-    unsafe { FreeCString(raw) };
+    FreeCString(raw);
     assert_eq!(out, r#"{"ok":false,"error":"input is null"}"#);
 }
 
@@ -181,5 +181,5 @@ fn exchange_validation() {
 
 #[test]
 fn free_c_string_accepts_null() {
-    unsafe { FreeCString(std::ptr::null_mut()) };
+    FreeCString(std::ptr::null_mut());
 }

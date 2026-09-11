@@ -175,9 +175,9 @@ async fn tunnel_roundtrip_inner(network: &str, echo_port: u16, tolerate_hard_har
                 token, role, network, target_port
             );
             let c = std::ffi::CString::new(input).unwrap();
-            let raw = unsafe { crate::StartUdpTunnel(c.as_ptr()) };
+            let raw = crate::StartUdpTunnel(c.as_ptr());
             let out = unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy().into_owned();
-            unsafe { crate::FreeCString(raw) };
+            crate::FreeCString(raw);
             let result: UdpTunnelResult = serde_json::from_str(&out).expect(out.as_str());
             (out, result)
         })
@@ -268,9 +268,9 @@ async fn tunnel_roundtrip_inner(network: &str, echo_port: u16, tolerate_hard_har
     for handle in [&active_result.handle_id, &passive_result.handle_id] {
         let input = format!(r#"{{"handle_id":"{}"}}"#, handle);
         let c = std::ffi::CString::new(input).unwrap();
-        let raw = unsafe { crate::StopUdpTunnel(c.as_ptr()) };
+        let raw = crate::StopUdpTunnel(c.as_ptr());
         let out = unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy().into_owned();
-        unsafe { crate::FreeCString(raw) };
+        crate::FreeCString(raw);
         assert!(out.contains(r#""ok":true"#), "stop failed: {}", out);
     }
 }

@@ -21,7 +21,7 @@ fn call(f: unsafe extern "C" fn(*const c_char) -> *mut c_char, input: &str) -> S
     let c = CString::new(input).unwrap();
     let raw = unsafe { f(c.as_ptr()) };
     let out = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
-    unsafe { FreeCString(raw) };
+    FreeCString(raw);
     out
 }
 
@@ -106,7 +106,7 @@ fn punch_tcp(args: &[String]) {
         .block_on(async move {
             use p2premote_punch::easyp2p::p2p::{easy_p2p_mp_with_options, EasyP2PMPOptions, P2PConn};
             use p2premote_punch::easyp2p::Scope;
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            use tokio::io::AsyncWriteExt;
 
             let scope = Scope::from_timeout(Duration::from_secs(110));
             let info = match easy_p2p_mp_with_options(&scope, &network, &token, EasyP2PMPOptions::default()).await {
