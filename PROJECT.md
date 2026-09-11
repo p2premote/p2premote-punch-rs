@@ -43,8 +43,9 @@ p2premote-punch-rs (本项目)
 p2premote-desktop-client   消费方（打洞：Linux 走 Rust 源码集成；Win/Mac 过渡期仍用 Go DLL/dylib）
 ```
 
-> **分工决策（2026-09-11）**：Win7 长期维持 "Go go120 wgonly DLL（WG 数据面）+
-> Rust 打洞库" 分工；Go 端 punchffi **不再维护、后续废弃**——打洞新特性
+> **分工决策（2026-09-11）**：**全平台终态**（Win7/Win10/Linux/macOS/Android）统一为
+> "Go go120 wgonly（WG 数据面）+ Rust 打洞库"；Go 端 punchffi **不再维护、后续废弃**
+> （其 WG 子集由 go120 独立模块 p2premote-wg-ffi 承接）——打洞新特性
 > （tcp4/v6/唤醒等）只落地 Rust 与 `protocol/client-client` 规范。
 
 ## 3. 当前实现状态
