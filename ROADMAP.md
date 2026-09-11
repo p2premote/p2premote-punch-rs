@@ -142,7 +142,10 @@ gonc 参照：`p2p.go:2393-2613`（`nat-exchange-wait/<uid>` topic、`SYN@tid`/`
 3. ⏳ 全回归矩阵：2026-09-11 已覆盖 udp4/tcp4/udp6 的 Rust↔Rust FFI 全链路、
    tcp4/tcp6/唤醒的 Go↔Rust 互通、18.04 冒烟；**跨 NAT easy×easy +100 同时打开
    路径**需双机环境，待有条件时补验
-4. ⏳ musl `.a` 交付物重产（master `dist/` 仍是 udp4-only 旧版）
+4. ✅ musl `.a` 交付物重产（2026-09-11）：WSL 构建链产出 x86_64（musl-gcc）与
+   aarch64（gnu 交叉 gcc + zig 链接）双架构 staticlib，经 `strip-rustlib.sh` 后
+   更新 master `dist/`（40.5MB/40.6MB，22 个 ABI 符号齐全）；c-tests harness
+   以 zig cc 链接全过（WSL Debian + 18.04 chroot 双环境）
 
 验收：目标老系统冒烟通过；BUILD.md 更新交付矩阵。
 

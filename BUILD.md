@@ -104,6 +104,15 @@ GetWindowsWgPeerStatus SetWindowsWgPeerAllowed`。另有链接期冲突标记
 - 已知实现细节差异（不影响协议互通）：STUN 重传节奏、随机数源、rumqttc 与
   paho 的重连细节；均有 burst 重发与 QoS1 保证兜底。
 
+## 交付物（2026-09-11 重产）
+
+`dist/{x86_64,aarch64}-unknown-linux-musl/libp2premote-punch.a` 为 std-external
+版本（已剥离 rustlib），支持 udp4/tcp4/udp6/tcp6 全网络矩阵与 MQTT 唤醒。
+构建链（WSL）：x86_64 用 musl-gcc；aarch64 用 `aarch64-linux-gnu-gcc` 编译 C 依赖
+（ring）+ zig 0.13 链接。注意 zig cc 的 `-target` 三元组不接受 `unknown` 段
+（用 `x86_64-linux-musl` 而非 `x86_64-unknown-linux-musl`）。
+C 宿主冒烟：`zig cc -target x86_64-linux-musl c-tests/harness.c <full .a> -lunwind`。
+
 ## 测试
 
 ```bash
