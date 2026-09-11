@@ -48,8 +48,9 @@
   存在（tier-3），但 1.94.1 工具链**无预编译 std**（`rustup target add` 失败）→
   Win7 交付需 nightly + `-Z build-std` 产出自包含静态库（不走 std-external 剥离
   路线，与工具链 pin 无冲突），或等社区预编译。结论：**可行但需额外 nightly 构建
-  通道**，P5 交付时按需搭建。（后注：全平台 DLL 决策后此路线已被更简单的
-  1.77 stable cdylib 方案取代，见 §6 决策 3 与 P5。）
+  通道**，P5 交付时按需搭建。（后注：该调研基于"客户端在新工具链上"的假设；
+  实际客户端本就锁定 1.77.2（最后的 Win7 兼容 stable），本库已统一到同一
+  1.77.2 —— Win7 与 Win10 共用同一 DLL，无需任何独立通道。）
 - [x] 搭建 Ubuntu 18.04 验证环境（2026-09-11）：WSL Debian + cloud-images
   bionic 18.04.6 rootfs（chroot 运行）；WSL 内安装 rustup 1.94.1 + musl target
   交叉构建链已就绪
@@ -142,9 +143,10 @@ gonc 参照：`p2p.go:2393-2613`（`nat-exchange-wait/<uid>` topic、`SYN@tid`/`
    （rustup 1.94.1 + musl-gcc + `RUSTFLAGS='-C linker=musl-gcc'`），在 18.04.6
    rootfs chroot 内与 Windows 上的 Go 完成 **MQTT 唤醒互通**（DNS/TLS/MQTT 全链路），
    `ldd` 确认静态链接
-2. ⏳ Win7 交付物：全平台 DLL 决策后简化——1.77 工具链（最后的 Win7 兼容 stable，
-   标准 tier-1 target）编译同一 cdylib 即可，无需 nightly/build-std；需 pin 依赖
-   到 1.77 兼容版本。待 Win7 客户端排期时执行
+2. ✅（构建层面）Win7 交付：工具链已与客户端统一为 **1.77.2**（最后的 Win7 兼容
+   stable，标准 tier-1 target，无需 nightly/build-std/独立通道）；依赖 pin
+   `base64ct=1.6.0`、`zeroize=1.7.0`；全量测试在 1.77.2 下通过，同一 DLL 覆盖
+   Win7/Win10。⏳ Win7 真机冒烟待排期
 3. ⏳ 全回归矩阵：2026-09-11 已覆盖 udp4/tcp4/udp6 的 Rust↔Rust FFI 全链路、
    tcp4/tcp6/唤醒的 Go↔Rust 互通、18.04 冒烟；**跨 NAT easy×easy +100 同时打开
    路径**需双机环境，待有条件时补验
@@ -178,15 +180,15 @@ Rust 侧的 WG 相关 FFI（`GenerateWgKeypair` 等）维持现状（桩，由 G
 | 目标系统 | 终态交付形态（Rust 打洞库 + Go go120 wgonly） | 现状 |
 |---|---|---|
 | Ubuntu 18.04 / 老 glibc Linux | 打洞：glibc 2.27 基线 `.so` / musl 静态 `.a` / 源码集成；WG：go120 wgonly | ✅ 18.04.6 chroot 实测（dlopen 调用 + 唤醒互通 + C harness） |
-| Windows 7 | 打洞：1.77 工具链编译同一 cdylib（决策 3 简化路线）；WG：go120 wgonly DLL | ⏳ 待 Win7 客户端排期 |
-| Windows 10+ / macOS | 打洞：Rust cdylib（win .dll 已就绪 / mac .dylib 待产出）；WG：go120 wgonly DLL/dylib | ⏳ 过渡期打洞仍用 Go DLL/dylib，随客户端切换 |
+| Windows 7 | 打洞：与其他平台同一路径（源码集成，工具链已统一 1.77.2）；WG：go120 wgonly DLL | ⏳ 构建已就绪，待 Win7 真机冒烟 |
+| Windows 10+ / macOS | 打洞：源码集成（win 已是此路径；mac 过渡期仍链 Go dylib）；WG：go120 wgonly DLL/dylib | ⏳ mac 打洞切换待排期 |
 | Android | 打洞：Rust 库（集成方式待定）；WG：go120 wgonly（aar） | ⏳ 当前全 Go aar，后续排期 |
 
 ## 5. 风险
 
 | 风险 | 缓解 |
 |---|---|
-| Win7 交付（1.77 工具链路线）：EOL 编译器无安全补丁、依赖需冻结在 1.77 兼容版本 | 仅作 Win7 专用旁路通道，不影响主线；执行时先验证依赖树可 pin |
+| 工具链统一 1.77.2：EOL 编译器无安全补丁、依赖冻结在 1.77 兼容版本 | 与客户端一致的共同选择（Win7 约束使然）；依赖仅需两处 pin，已验证可锁定 |
 | 公网 MQTT/STUN broker 不可控 | 测试容忍多 broker 任一可用；本地起 mosquitto 做确定性用例 |
 | TCP 打洞 800 并发 dial 的 fd/内存峰值 | 压测并设上限；Linux ulimit 文档化 |
 | Go/Rust 双库并存期协议漂移 | `protocol/client-client` schema 为真源，互通测试锁定（punchffi 废弃完成后此风险自然消除） |
@@ -200,10 +202,11 @@ Rust 侧的 WG 相关 FFI（`GenerateWgKeypair` 等）维持现状（桩，由 G
    （WG 数据面）+ Rust 打洞库"** 分工——WG 数据面在所有平台由 go120 基线模块
    （p2premote-wg-ffi）承担，Rust 负责全部打洞能力。Win7 交付路线已定（见决策 3）；
    Android 的 Rust 打洞库集成方式后续排期；userspace WG 数据面复刻（WX1）取消。
-3. **全平台动态库形态**（2026-09-11 追加）：punch-rs 所有平台统一 cdylib + C ABI
-   交付（`dist/windows-x86_64/*.dll`、`dist/linux-x86_64-gnu.2.27/*.so`），主客户
-   端 C 接口调用。工具链解耦；Win7 交付简化为 1.77 工具链编译同一 cdylib。
-   源码集成与 std-external 静态库降为备选。
+3. **交付形态**（2026-09-11，当日两次裁定，以后者为准）：早先裁定全平台
+   cdylib + C ABI；**晚间回退为源码集成为唯一主路径**——工具链统一 1.77.2
+   （与客户端一致，Win7 兼容）后单一 Rust 世界无任何耦合问题，主程序直调
+   `api::*`；cdylib 导出与 `dist` 的 DLL/.so 产物已删除，C ABI 仅保留给
+   macOS 过渡 dylib 与静态库备选。
 4. **Go 端 punchffi**：**不再维护，后续废弃**。新特性（tcp4/v6 等网络枚举、唤醒等）
    只落地 Rust 与 `protocol/client-client` 规范，无需同步 Go punchffi；
    Go 侧代码（gonc-main / p2premote-punch）保留为参照与互测对手（go-interop 在

@@ -19,10 +19,10 @@ gonc（Go 版 NAT 穿透 / P2P 打洞库）的 Rust 复刻，作为 p2premote �
   运行时基线，天然兼容老系统；同时通过**字节级协议兼容**与 Go 端互通（已验证
   Go↔Rust 全链路打洞）。
 
-> 兼容性说明：`rust-toolchain.toml` 锁定 Rust 1.94.1 是为"std-external 静态库"备选
-> 交付路径的宿主同版本 std 约束。**全平台 DLL 决策后主交付形态不再受此约束**（cdylib
-> 自带 std，工具链与客户端解耦）；老系统兼容由 musl 静态 / glibc 2.27 基线 `.so`
-> 解决；Win7 交付路线为 1.77 工具链编译同一 cdylib（见 ROADMAP 决策记录）。
+> 兼容性说明：`rust-toolchain.toml` 锁定 Rust **1.77.2**，与 p2premote-desktop-client
+> 一致——1.77 是最后一个官方支持 Windows 7 的 stable，客户端锁它正是为了 Win7。
+> 本库统一同一工具链后，**同一份 Windows DLL 覆盖 Win10 与 Win7，无需任何独立
+> 交付通道**。老系统 Linux 侧由 glibc 2.27 基线 `.so` / musl 静态 `.a` 覆盖。
 
 ## 2. 三个仓库的关系
 
@@ -38,10 +38,9 @@ p2premote-punch (Go)
    │  Rust 重写（easyp2p + punchffi 子集），与 Go 端字节级协议互通
    ▼
 p2premote-punch-rs (本项目)
-   │  cdylib 动态库 + C ABI（主路径：win .dll / linux .so / mac .dylib）
-   │  备选：源码 path 依赖（Linux）/ 剥离 rustlib 的 musl 静态库 .a
+   │  源码 path 依赖（唯一主路径；工具链统一 1.77.2 与客户端一致）
    ▼
-p2premote-desktop-client   消费方（C 接口调用；过渡期 Win/Mac 打洞仍走 Go DLL/dylib）
+p2premote-desktop-client   消费方（Linux/Windows 直接调 api::*；mac 过渡期打洞走 Go dylib）
 ```
 
 > **分工决策（2026-09-11）**：**全平台终态**（Win7/Win10/Linux/macOS/Android）统一为
@@ -88,14 +87,14 @@ UDP4 链路自初版即相当完整（并非"简单 demo"），2026-09-11 起补
 | `GenerateWgKeypair` | 维持桩（由 Go 侧提供） |
 | secure 层（TLS/DTLS/KCP/SS） | **暂缓**（gonc 有；p2premote-punch 已删除并固定明文 UDP，主程序不需要） |
 | 跨 NAT easy×easy +100 路径实网验证 | 待双机环境（单机已覆盖同 LAN 直连与 hard×easy RSP 路径） |
-| macOS dylib 产物 | 待 mac 环境构建（无代码差异） |
-| Win7 DLL 产物 | 路线已定（1.77 工具链编译同一 cdylib），待 Win7 客户端排期 |
+| macOS 切换到源码集成 | mac 客户端过渡期仍链 Go dylib；切 Rust 后与其他平台同路径 |
+| Win7 真机冒烟 | 构建兼容已随工具链统一（1.77.2，与客户端相同）解决；待 Win7 真机验证 |
 
 ## 4. 代码结构
 
 ```
 src/
-├── lib.rs              FFI 入口（panic 防护）+ JSON 编解码 + Rust 原生 api 模块（cdylib/staticlib/rlib）
+├── lib.rs              FFI 入口（panic 防护）+ JSON 编解码 + Rust 原生 api 模块（staticlib/rlib）
 ├── types.rs            全部 JSON 请求/响应结构（镜像 punchffi/main.go，含 omitempty 语义）
 ├── runtime.rs          全局 tokio 多线程 runtime（支撑阻塞式 C ABI）
 ├── handles.rs          长生命周期隧道句柄注册表（udp-<unix-nanos>，幂等 stop）
@@ -132,9 +131,10 @@ src/
 
 ## 5. 对外接口
 
-### 5.1 C ABI（`feature = "ffi"`，JSON-in / JSON-out，`char* f(char*)`）
+### 5.1 C ABI（`feature = "ffi"` 默认关闭；不在主程序源码集成路径上）
 
-与 Go punchffi 一一对应（详见 BUILD.md 符号清单）：
+与 Go punchffi 一一对应（详见 BUILD.md 符号清单），仅保留给 macOS 过渡 dylib
+与静态库备选场景：
 
 - **打洞隧道**：`StartUdpTunnel` / `StopUdpTunnel`
 - **子网路由**：`StartSubnetRouter` / `StopSubnetRouter` / `GetSubnetRouterStatus`
@@ -144,15 +144,33 @@ src/
   （WindowsWg 别名 + UserspaceWg 别名，均为桩）
 - `FreeCString`、`P2PremotePunchRsAbiVersion()`（恒 2，防与 Go 库双重链接的标记符号）
 
-### 5.2 Rust 原生 API（`pub mod api`，无 C ABI、不嵌套 runtime）
+### 5.2 主程序调用面（源码集成，`pub mod api`，无 C ABI、不嵌套 runtime）
+
+客户端 `core/Cargo.toml`：`p2premote-punch = { path = "../../p2premote-punch-rs",
+default-features = false }`（关 ffi feature，无 C ABI 导出）。主程序当前
+（`core/src/gonc_ffi.rs` 的 `*_native` 函数，Linux/Windows 生效）使用的接口：
 
 ```rust
-pub async fn start_udp_tunnel(request: UdpTunnelInput, budget: Duration) -> Result<UdpTunnelResult, String>
+// 打洞 + 本地前转隧道（network 字段：udp4 | tcp4 | udp6 | tcp6）
+pub async fn start_udp_tunnel(request: UdpTunnelInput, budget: Duration)
+    -> Result<UdpTunnelResult, String>
+// 幂等停止（handle_id 来自返回的 UdpTunnelResult）
 pub fn stop_udp_tunnel(handle_id: &str)
-pub async fn exchange(request: ExchangeInput, timeout: Duration) -> Result<ExchangeResult, String>
-pub fn start_udp_tunnel_json(input: &str) -> String   // JSON 便捷版 ×3
-pub async fn detect_nat(networks: &[&str], budget: Duration) -> Result<Vec<NatAddressInfo>, String>
+// WGVPN 密钥/地址交换（exmode 0=mutual / 1=waitOnly / 2=reply）
+pub async fn exchange(request: ExchangeInput, timeout: Duration)
+    -> Result<ExchangeResult, String>
+
+// 类型（serde 兼容客户端的 JSON 结果契约，从客户端 UdpTunnelRequest 直接转换）
+p2premote_punch::{UdpTunnelInput, UdpTunnelResult, ExchangeInput, ExchangeResult}
 ```
+
+库级另可选用的公开接口（主程序暂未调用）：
+`api::detect_nat`（NAT 分类查询）、`api::*_json`（JSON 直通便捷版）、
+`easyp2p::wake::{mqtt_wait, mqtt_hello}`（待命唤醒）、`easyp2p::*`（打洞内核
+全部公开，供深度集成）。
+
+C ABI（§5.1，`ffi` feature，默认关闭）不在主程序源码集成路径上，仅保留给
+macOS 过渡 dylib 与静态库备选场景。
 
 ## 6. 协议兼容性要点（改动时必须保持）
 
@@ -172,13 +190,12 @@ pub async fn detect_nat(networks: &[&str], budget: Duration) -> Result<Vec<NatAd
 
 ## 7. 构建与集成（详见 BUILD.md）
 
-- **主路径 = 动态库交付（2026-09-11 决策）**：所有平台统一 cdylib + C ABI
-  （`dist/windows-x86_64/*.dll`、`dist/linux-x86_64-gnu.2.27/*.so`），主客户端
-  C 接口调用，工具链与客户端彻底解耦。
-- **备选 1 = 源码集成**：path 依赖（可关 `ffi` feature 去掉 C ABI 导出）。
-- **备选 2 = 静态库交付**：`cargo build --release --lib --target *-musl` 产自包含 `.a`；
+- **唯一主路径 = 源码集成**（2026-09-11 定稿）：主程序 path 依赖 + 直调
+  `api::*`（见 §5.2）；动态库交付（cdylib/DLL/.so）已决策回退并删除。
+- 备选 = 静态库交付：`cargo build --release --lib --target *-musl` 产自包含 `.a`；
   供 Rust 宿主必须先 `scripts/strip-rustlib.sh` 剥离 rustlib，且两端同版本工具链。
-- 工具链锁定 1.94.1（与 p2premote-desktop-client 一致）。
+- 工具链锁定 1.77.2（与 p2premote-desktop-client 一致，Win7 兼容的最后一个 stable）；
+  依赖 pin：`base64ct=1.6.0`、`zeroize=1.7.0`。
 - 日志默认静默，`P2PREMOTE_PUNCH_LOG=1` 输出到 stderr。
 
 ## 8. 开发工作流（worktree 隔离）

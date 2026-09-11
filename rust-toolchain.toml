@@ -1,5 +1,8 @@
-# 与 p2premote-desktop-client 的工具链保持同版本：剥离 rustlib 后的静态库
-# 要求宿主使用同一版本工具链的 std 符号。
+# 与 p2premote-desktop-client 一致（其 rust-toolchain.toml 同为 1.77.2）：
+# 1.77 是最后一个官方支持 Windows 7 的 stable —— 主程序客户端锁 1.77.2
+# 正是为了 Win7，本库统一同一工具链后 Win10/Win7 共用同一份 DLL，无需任何
+# 独立交付通道。cdylib 自带 std，与客户端工具链无符号耦合；若未来恢复
+# std-external 静态库交付，两端同版本的要求同样满足。
 [toolchain]
-channel = "1.94.1"
+channel = "1.77.2"
 profile = "minimal"

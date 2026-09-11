@@ -28,7 +28,7 @@ pub fn b64_raw() -> base64::engine::GeneralPurpose {
 }
 
 pub fn calculate_md5(input: &str) -> String {
-    use md5::{Digest, Md5};
+    use md5::Md5;
     let mut h = Md5::new();
     h.update(input.as_bytes());
     hex(&h.finalize())

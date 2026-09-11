@@ -1,13 +1,26 @@
 # p2premote-punch-rs 构建与对接说明
 
-`p2premote-punch`（Go / punchffi）的 Rust 重写。目标：替换 Go c-archive，解决
+`p2premote-punch`（Go / punchffi）的 Rust 重写。目标：替换 Go punchffi，解决
 Go 运行时与 musl 静态链接的运行期错误；与 Go 端（Android gomobile AAR / Go
 CLI / 桌面客户端 Go 库）**字节级协议互通**。
 
-## 备选 A：与 desktop-client 源码集成（Linux 过渡现状）
+## 交付形态（2026-09-11 定稿）：源码集成（唯一主路径）
 
-**主路径已切换为全平台 cdylib（见下"动态库交付"节）**；源码 path 依赖是 Linux
-当前的过渡现状（单一 Rust 世界，无 staticlib 双 std 冲突）：
+**主程序（p2premote-desktop-client）以源码 path 依赖方式使用本库**——单一
+Rust 世界，无 C ABI、无符号耦合、无独立交付产物。工具链与本库统一为
+**1.77.2**（与客户端一致，也是最后一个官方支持 Windows 7 的 stable），
+Linux/Windows 客户端已实际走此路径（`core/src/gonc_ffi.rs` 的
+`*_native` 函数直接调 `p2premote_punch::api::*`）。
+
+主程序调用面（详见 PROJECT.md §5）：
+- `api::start_udp_tunnel(UdpTunnelInput, budget)` / `api::stop_udp_tunnel(handle)`
+- `api::exchange(ExchangeInput, timeout)`
+- 类型 `p2premote_punch::{UdpTunnelInput, UdpTunnelResult, ExchangeInput, ExchangeResult}`
+
+C ABI（`ffi` feature，默认关闭）仅保留给 macOS 过渡期的 dylib 与静态库备选；
+动态库交付（cdylib + dist DLL/.so）已于 2026-09-11 决策回退并删除。
+
+## 源码集成细节（客户端现状）
 
 - `core/Cargo.toml`：`p2premote-punch = { path = "../../p2premote-punch-rs" }`。
 - `core/src/gonc_ffi.rs` 顶部一行 `#[cfg(target_os = "linux")] use p2premote_punch as _;`
@@ -23,14 +36,13 @@ CLI / 桌面客户端 Go 库）**字节级协议互通**。
 已验证（WSL Debian）：musl + 默认 LTO 构建通过，`p2premote-service`/`cli`
 完全静态（`NEEDED` 条目为 0）、可运行、FFI 符号在位。
 
-## 备选：静态库产物交付（`dist/`，非默认）
-
 如需 Go 式 `.a` 产物（外部消费者、C 宿主冒烟等），本仓库仍可产出：
 
 ```bash
-# crate 用 rust-toolchain.toml 锁 1.94.1（与客户端一致）
-rustup target add x86_64-unknown-linux-musl --toolchain 1.94.1
-rustup target add aarch64-unknown-linux-musl --toolchain 1.94.1   # 交叉 arm64 产物
+# crate 用 rust-toolchain.toml 锁 1.77.2（与客户端 p2premote-desktop-client 一致，
+# 也是最后一个官方支持 Windows 7 的 stable）
+rustup target add x86_64-unknown-linux-musl --toolchain 1.77.2
+rustup target add aarch64-unknown-linux-musl --toolchain 1.77.2   # 交叉 arm64 产物
 
 # 自包含版（供 C 宿主）——必须用普通 cargo build
 cargo build --release --lib --target x86_64-unknown-linux-musl
@@ -50,7 +62,7 @@ scripts/strip-rustlib.sh <archive.a> <rust-target-triple>
 
 `scripts/strip-rustlib.sh` 按目标 rustlib 目录的实际 `<crate>-<hash>` 精确匹配
 剥离（punch 自编译的同名 crate 哈希不同、自动保留），并剔除分配器 shim、
-compiler-rt 与 ring 的裸对象。剥离版的约束：两端同版本工具链（都锁 1.94.1）、
+compiler-rt 与 ring 的裸对象。剥离版的约束：两端同版本工具链（都锁 1.77.2）、
 宿主有同版本 ring、链接时 `--whole-archive` 且关闭 thin-LTO（thin-LTO 会内部化
 仅被原生对象引用的符号）。客户端的
 `scripts/build-p2premote-punch-rs.sh` 封装了这套流程（当前未被
@@ -103,38 +115,15 @@ GetWindowsWgPeerStatus SetWindowsWgPeerAllowed`。另有链接期冲突标记
 - 已知实现细节差异（不影响协议互通）：STUN 重传节奏、随机数源、rumqttc 与
   paho 的重连细节；均有 burst 重发与 QoS1 保证兜底。
 
-## 动态库交付（全平台统一形态，2026-09-11 决策）
-
-**决策：所有平台统一以 cdylib（动态库）+ C ABI JSON 契约交付**，主客户端通过
-C 接口调用——与原 Go DLL 模型同构。收益：客户端与打洞库的 Rust 工具链彻底解耦
-（客户端可独立升级，无需同版本 std 约束）；Win7 交付简化为"用 1.77 工具链编同
-一个 cdylib"；部署形态与现有 Go DLL 一致。源码集成与 std-external 静态库降为
-备选路径。
-
-- crate-type 增加 `cdylib`；全部 JSON-in/JSON-out 导出经 panic 防护包装
-  （Rust panic 不跨 C ABI 边界，返回内部错误 JSON）；四个忽略输入的导出
-  （GetWgCapabilities 等）保持 Go 语义（null 输入仍返回结果）。
-- 产物（master `dist/`，dist 不入 git）：
-  - `windows-x86_64/p2premote_punch.dll`（+ `.dll.lib` 导入库）——已用 P/Invoke
-    实测加载并调用（ABI=2、caps JSON 正确）
-  - `linux-x86_64-gnu.2.27/libp2premote_punch.so`——cargo-zigbuild 以
-    glibc 2.27 基线链接（实测符号版本上限 GLIBC_2.25），已在 **Ubuntu 18.04.6
-    chroot 内 dlopen + 调用**验证
-  - musl 静态 `.a` 双架构保留（C 宿主静态链接备选）
-- Linux `.so` 构建（WSL）：`cargo zigbuild --release --lib --target
-  x86_64-unknown-linux-gnu.2.27`（zig 0.13；注意裸 zig cc 处理 rustc 的
-  `-shared -nodefaultlibs` 有 Scrt1 怪癖，必须用 cargo-zigbuild）
-- macOS dylib 待 mac 环境产出（同一 crate-type，无代码差异）
-- 客户端接入：`P2PremotePunchRsAbiVersion()` 应在加载后校验（期望 2）
-
-## 交付物（2026-09-11 重产）
+## 备选：静态库产物（`dist/`，非默认）
 
 `dist/{x86_64,aarch64}-unknown-linux-musl/libp2premote-punch.a` 为 std-external
 版本（已剥离 rustlib），支持 udp4/tcp4/udp6/tcp6 全网络矩阵与 MQTT 唤醒。
-构建链（WSL）：x86_64 用 musl-gcc；aarch64 用 `aarch64-linux-gnu-gcc` 编译 C 依赖
-（ring）+ zig 0.13 链接。注意 zig cc 的 `-target` 三元组不接受 `unknown` 段
-（用 `x86_64-linux-musl` 而非 `x86_64-unknown-linux-musl`）。
+构建链（WSL，1.77.2 工具链）：x86_64 用 musl-gcc；aarch64 用
+`aarch64-linux-gnu-gcc` 编译 C 依赖（ring）+ zig 0.13 链接。注意 zig cc 的
+`-target` 三元组不接受 `unknown` 段（用 `x86_64-linux-musl`）。
 C 宿主冒烟：`zig cc -target x86_64-linux-musl c-tests/harness.c <full .a> -lunwind`。
+依赖 pin（1.77.2 兼容）：`base64ct=1.6.0`、`zeroize=1.7.0`（避开 edition2024）。
 
 ## 测试
 
