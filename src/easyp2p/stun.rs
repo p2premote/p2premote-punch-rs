@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use super::netx;
 use super::{P2pError, Result, Scope};
 
-pub const STUN_SERVERS: &[&str] = &[
+pub const DEFAULT_STUN_SERVERS: &[&str] = &[
     "tcp://turn.cloudflare.com:80",
     "udp://turn.cloudflare.com:53?3478",
     "udp://stun.l.google.com:19302",
@@ -21,6 +21,24 @@ pub const STUN_SERVERS: &[&str] = &[
     "global.turn.twilio.com:3478",
     "stun.nextcloud.com:443",
 ];
+
+/// STUN server list (gonc STUNServers). Env: P2PREMOTE_STUN_SERVERS
+/// (comma-separated, same URL syntax incl. tcp:// / udp:// and ?port races).
+pub fn stun_servers() -> Vec<String> {
+    static VALUE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    VALUE
+        .get_or_init(|| {
+            match std::env::var("P2PREMOTE_STUN_SERVERS") {
+                Ok(v) if !v.trim().is_empty() => v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>(),
+                _ => DEFAULT_STUN_SERVERS.iter().map(|s| s.to_string()).collect(),
+            }
+        })
+        .clone()
+}
 
 const STUN_MAGIC: u32 = 0x2112_A442;
 const STUN_BINDING_REQUEST: u16 = 0x0001;
@@ -585,7 +603,8 @@ pub async fn get_public_ips(
         scheme: String,
     }
     let mut specs = Vec::new();
-    for (index, raw) in STUN_SERVERS.iter().enumerate() {
+    let stun_servers = stun_servers();
+    for (index, raw) in stun_servers.iter().enumerate() {
         let (scheme, addr) = if let Some(rest) = raw.strip_prefix("udp://") {
             ("udp".to_string(), rest.to_string())
         } else if let Some(rest) = raw.strip_prefix("tcp://") {

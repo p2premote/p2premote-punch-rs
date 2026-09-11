@@ -21,12 +21,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_PUNCHING_SHORT_TTL: i32 = 5;
-pub const PUNCHING_SHORT_TTL: i32 = DEFAULT_PUNCHING_SHORT_TTL;
-pub const PUNCHING_RANDOM_PORT_COUNT: usize = 600;
+pub const DEFAULT_PUNCHING_RANDOM_PORT_COUNT: usize = 600;
+pub const DEFAULT_TOPIC_EXCHANGE: &str = "nat-exchange/";
 
-pub const TOPIC_EXCHANGE: &str = "nat-exchange/";
-
-pub const MQTT_BROKER_SERVERS: &[&str] = &[
+pub const DEFAULT_MQTT_BROKER_SERVERS: &[&str] = &[
     "tcp://broker.hivemq.com:1883",
     "tcp://broker.emqx.io:1883",
     "tcp://test.mosquitto.org:1883",
@@ -34,6 +32,69 @@ pub const MQTT_BROKER_SERVERS: &[&str] = &[
 ];
 
 pub const TOPIC_DESC_SIGNAL: &str = "SG";
+
+// ============ tunables (gonc package vars → env overrides) ============
+//
+// gonc exports STUNServers / MQTTBrokerServers / PunchingShortTTL /
+// PunchingRandomPortCount / TopicExchange as package variables the CLI can
+// override; the Rust equivalent is environment variables so the FFI JSON
+// contract stays frozen.
+
+/// UDP punch short TTL (PunchingShortTTL). Env: P2PREMOTE_PUNCH_SHORT_TTL.
+pub fn punching_short_ttl() -> i32 {
+    static VALUE: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("P2PREMOTE_PUNCH_SHORT_TTL")
+            .ok()
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .filter(|v| *v >= 1)
+            .unwrap_or(DEFAULT_PUNCHING_SHORT_TTL)
+    })
+}
+
+/// Birthday-attack port count (PunchingRandomPortCount). Env:
+/// P2PREMOTE_PUNCH_RANDOM_PORTS.
+pub fn punching_random_port_count() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("P2PREMOTE_PUNCH_RANDOM_PORTS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|v| *v >= 1)
+            .unwrap_or(DEFAULT_PUNCHING_RANDOM_PORT_COUNT)
+    })
+}
+
+/// MQTT topic prefix (TopicExchange). Env: P2PREMOTE_TOPIC_PREFIX.
+pub fn topic_exchange() -> String {
+    static VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VALUE
+        .get_or_init(|| {
+            std::env::var("P2PREMOTE_TOPIC_PREFIX")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| DEFAULT_TOPIC_EXCHANGE.to_string())
+        })
+        .clone()
+}
+
+/// MQTT broker list. Env: P2PREMOTE_MQTT_BROKERS (comma-separated URLs).
+pub fn mqtt_broker_servers() -> Vec<String> {
+    static VALUE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    VALUE
+        .get_or_init(|| {
+            match std::env::var("P2PREMOTE_MQTT_BROKERS") {
+                Ok(v) if !v.trim().is_empty() => v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>(),
+                _ => DEFAULT_MQTT_BROKER_SERVERS.iter().map(|s| s.to_string()).collect(),
+            }
+        })
+        .clone()
+}
 
 /// Capability flag: parallel UDP hole punching through multiple exits.
 pub const CAP_MULTI_EXIT_UDP_PUNCH: &str = "multi-exit-udp-punch";

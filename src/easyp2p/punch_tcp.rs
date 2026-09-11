@@ -17,7 +17,7 @@ use super::candidates::{self, is_same_lan, P2PAddressInfo};
 use super::netx;
 use super::p2p::{self, P2PSessionContext};
 use super::punch_udp::StopFlag;
-use super::{P2pError, Result, Scope, PUNCHING_RANDOM_PORT_COUNT};
+use super::{P2pError, Result, Scope};
 
 const MAX_WORKERS: usize = 800;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -332,9 +332,10 @@ async fn run_dial(sh: Arc<PunchShared>, plan: DialPlan, round_scope: Scope) {
         if sh.stop.is_stopped() || round_scope.expired() {
             return;
         }
+        let random_port_count = super::punching_random_port_count();
         let mut in_flight: Vec<tokio::task::JoinHandle<bool>> = Vec::new();
         if random_dst_port {
-            let ports = p2p::generate_random_ports(PUNCHING_RANDOM_PORT_COUNT);
+            let ports = p2p::generate_random_ports(random_port_count);
             crate::p2plog!("  ↑ Trying {} Random Destination Ports concurrently...", ports.len());
             for port in ports {
                 if port as i32 == plan.orig_remote_port {
@@ -356,8 +357,8 @@ async fn run_dial(sh: Arc<PunchShared>, plan: DialPlan, round_scope: Scope) {
             }
         }
         if random_src_port {
-            let ports = p2p::generate_random_ports(PUNCHING_RANDOM_PORT_COUNT);
-            crate::p2plog!("  ↑ Trying {} Random Source Ports concurrently...", PUNCHING_RANDOM_PORT_COUNT);
+            let ports = p2p::generate_random_ports(random_port_count);
+            crate::p2plog!("  ↑ Trying {} Random Source Ports concurrently...", random_port_count);
             for port in ports {
                 if port as i32 == plan.orig_local_port {
                     // avoid our own STUN port

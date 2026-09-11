@@ -105,7 +105,7 @@ pub fn attempt_details(info: Option<&P2PAddressInfo>, sess_ctx: Option<&P2PSessi
 
 /// detect NAT address info via STUN (DetectNATAddressInfoContext, relay-less).
 async fn detect_nat_address_info(scope: &Scope, networks: &[String], bind: &str) -> Result<Vec<candidates::PunchingAddressInfo>> {
-    crate::p2plog!("    Getting local public IP info via {} STUN servers...", stun::STUN_SERVERS.len());
+    crate::p2plog!("    Getting local public IP info via {} STUN servers...", stun::stun_servers().len());
     let results = stun::get_networks_public_ips(scope, networks, bind, Duration::from_millis(2828)).await;
     let all_results = match results {
         Ok(r) => r,
@@ -199,7 +199,7 @@ pub async fn do_auto_p2p_ex2(
         return Err(P2pError::msg("operation cancelled"));
     }
 
-    crate::p2plog!("    Exchanging address info with peer via {} MQTT servers...", super::MQTT_BROKER_SERVERS.len());
+    crate::p2plog!("    Exchanging address info with peer via {} MQTT servers...", super::mqtt_broker_servers().len());
     let (remote_payload, _srv_index) = mqtt_signal::secure_exchange_with_session(
         scope,
         signal,

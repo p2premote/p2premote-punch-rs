@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use super::candidates::{self, P2PAddressInfo};
 use super::netx;
 use super::p2p::{self, P2PSessionContext};
-use super::{P2pError, Result, Scope, DEFAULT_PUNCHING_SHORT_TTL, PUNCHING_RANDOM_PORT_COUNT, PUNCHING_SHORT_TTL};
+use super::{P2pError, Result, Scope, DEFAULT_PUNCHING_SHORT_TTL};
 
 const RPP_TIMEOUT_SECS: u64 = 7;
 
@@ -144,7 +144,7 @@ pub async fn auto_p2p_udp_nat_traversal(
         }
     }
     if is_client {
-        ttl = PUNCHING_SHORT_TTL as u32;
+        ttl = super::punching_short_ttl() as u32;
         if ttl == DEFAULT_PUNCHING_SHORT_TTL as u32
             && p2p_info.network.ends_with('4')
             && sess_ctx.local_public_ipv4_count > 1
@@ -553,12 +553,13 @@ async fn send_rdp_ping(
     let socket = ctx.socket();
     let ttl = ctx.ttl.load(Ordering::SeqCst);
     let _ = netx::set_udp_ttl(&socket, ttl);
-    let ports = p2p::generate_random_ports(PUNCHING_RANDOM_PORT_COUNT);
+    let random_port_count = super::punching_random_port_count();
+    let ports = p2p::generate_random_ports(random_port_count);
     crate::p2plog!(
         "  ↑ Sending Random Dst Ports hole-punching packets to {} IP. TTL={}; total={}",
         remote_nat_ips.len(),
         ttl,
-        PUNCHING_RANDOM_PORT_COUNT * remote_nat_ips.len()
+        random_port_count * remote_nat_ips.len()
     );
     for ip in &remote_nat_ips {
         let Ok(ip_addr) = ip.parse::<std::net::IpAddr>() else { continue };
@@ -589,19 +590,20 @@ async fn send_rsp_ping(
             all_remote_addrs.push(addr);
         }
     }
+    let random_port_count = super::punching_random_port_count();
     crate::p2plog!(
         "  ↑ Sending Random Src Ports hole-punching packets to {} IP. total={}",
         1 + info.remote_udp4_nat_alternatives.len(),
-        PUNCHING_RANDOM_PORT_COUNT * (1 + info.remote_udp4_nat_alternatives.len())
+        random_port_count * (1 + info.remote_udp4_nat_alternatives.len())
     );
 
     let ttl = ctx.ttl.load(Ordering::SeqCst);
-    let rand_ports = p2p::generate_random_ports(PUNCHING_RANDOM_PORT_COUNT + 50);
+    let rand_ports = p2p::generate_random_ports(random_port_count + 50);
 
-    let mut conns: Vec<Arc<UdpSocket>> = Vec::with_capacity(PUNCHING_RANDOM_PORT_COUNT);
+    let mut conns: Vec<Arc<UdpSocket>> = Vec::with_capacity(random_port_count);
     let bind_ip = local_addr.ip();
     for port in &rand_ports {
-        if conns.len() >= PUNCHING_RANDOM_PORT_COUNT {
+        if conns.len() >= random_port_count {
             break;
         }
         let sa = SocketAddr::new(bind_ip, *port);

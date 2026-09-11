@@ -73,7 +73,7 @@ pub fn derive_key(salt: &str, uid: &str) -> [u8; 32] {
 }
 
 pub fn topic_from_salt_and_session_uid(topic_salt: &str, session_uid: &str) -> String {
-    format!("{}{}", super::TOPIC_EXCHANGE, derive_key_for_topic(topic_salt, session_uid))
+    format!("{}{}", super::topic_exchange(), derive_key_for_topic(topic_salt, session_uid))
 }
 
 /// MQTT_GenerateClientID: "{desc[:2]}-{cidhash[:8]}-{8 random alnum}" (≤23 chars).

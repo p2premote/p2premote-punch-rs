@@ -14,7 +14,7 @@ use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use tokio::sync::mpsc;
 
 use super::crypto::{self, SecurePayload};
-use super::{CancelToken, P2pError, Result, Scope, EXMODE_MUTUAL, EXMODE_PUBLISH_ONLY, EXMODE_WAIT_ONLY, MQTT_BROKER_SERVERS, TOPIC_DESC_SIGNAL};
+use super::{CancelToken, P2pError, Result, Scope, EXMODE_MUTUAL, EXMODE_PUBLISH_ONLY, EXMODE_WAIT_ONLY, TOPIC_DESC_SIGNAL};
 
 pub const MQTT_NO_PREFERRED_BROKER: i32 = -1;
 
@@ -126,8 +126,8 @@ impl MqttSignalSession {
         _local_ip: &str,
     ) -> Result<Arc<MqttSignalSession>> {
         let mut brokers = Vec::new();
-        for server in MQTT_BROKER_SERVERS {
-            brokers.push(parse_mqtt_server(server)?);
+        for server in super::mqtt_broker_servers() {
+            brokers.push(parse_mqtt_server(&server)?);
         }
         if brokers.is_empty() {
             return Err(P2pError::msg("no MQTT broker servers configured"));

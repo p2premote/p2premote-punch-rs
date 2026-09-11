@@ -422,6 +422,40 @@ pub mod api {
     pub fn exchange_json(input: &str) -> String {
         super::handle_exchange_json(input)
     }
+
+    /// NAT classification entry for the caller (gonc -nat-checker
+    /// equivalent): probe STUN and return the analyzed addresses.
+    #[derive(Debug, Clone, serde::Serialize)]
+    pub struct NatAddressInfo {
+        pub network: String,
+        pub nat_type: String,
+        pub lan: String,
+        pub nat: String,
+    }
+
+    /// Classify the local NAT for the given networks (any of
+    /// "udp4"/"tcp4"/"udp6"/"tcp6").
+    pub async fn detect_nat(networks: &[&str], budget: Duration) -> Result<Vec<NatAddressInfo>, String> {
+        let scope = easyp2p::Scope::from_timeout(budget);
+        let network_list: Vec<String> = networks.iter().map(|s| s.to_string()).collect();
+        let results = easyp2p::stun::get_networks_public_ips(
+            &scope,
+            &network_list,
+            "",
+            std::time::Duration::from_millis(2828),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(easyp2p::stun::analyze_stun_results(&results)
+            .into_iter()
+            .map(|a| NatAddressInfo {
+                network: a.network,
+                nat_type: a.nattype,
+                lan: a.lan,
+                nat: a.nat,
+            })
+            .collect())
+    }
 }
 
 fn encode_exchange_result(result: &ExchangeResult) -> String {
