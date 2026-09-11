@@ -20,16 +20,16 @@
 | 参数可配置（STUN/broker/TTL/端口数/topic） | gonc 导出变量 | ❌ 硬编码 |
 | NAT 类型独立查询（-nat-checker 等价入口） | `DetectNATAddressInfo` | ⚠️ 仅内部使用 |
 
-### 1.2 范围外 / 明确排除 / 并行工作流
+### 1.2 范围外 / 已决策排除 / 暂缓项
 
 | 工作流 | 说明 | 决策 |
 |---|---|---|
 | **relay 中继（SOCKS5 UDP ASSOCIATE）** | gonc 的 `-x`/`-x2` 降级路径（GONC_DESIGN §14） | **已决策：不实现**（2026-09-11）。FFI 维持 `allow_relay=true` 报错 |
-| **WX1 userspace WireGuard 数据面**（boringtun + wintun/utun + 用户态 TCP 栈） | **不属于 gonc 复刻**（是 p2premote 扩展），但属于"完全替换 Go 库"的必要条件（Win/Mac 侧） | 并行推进，独立排期 |
-| **WX2 secure 层**（TLS1.3+PSK / DTLS / KCP / ShadowStream） | gonc 有；但 p2premote-punch 已删除 secure 栈并固定**明文 UDP**，主程序不需要 | 默认**不做**，仅当要做独立 gonc CLI 替代品时启动 |
-| **WX3 gonc 应用层**（netcat CLI、mux、socks5 server、文件分享、PTY shell、端口轮换、ACL） | 属于 gonc 工具本体，不属于打洞库定位 | 默认**不做** |
+| **WX1 userspace WireGuard 数据面**（boringtun + wintun/utun + 用户态 TCP 栈） | p2premote 扩展，非 gonc 范畴 | **已决策：取消**（2026-09-11）。Win7 长期维持 "Go go120 wgonly DLL（WG）+ Rust 打洞库" 分工；Win/Mac 的 WG 数据面继续由 Go DLL（p2premote-wg-ffi）承担 |
+| **WX2 secure 层**（TLS1.3+PSK / DTLS / KCP / ShadowStream） | gonc 有；但 p2premote-punch 已删除 secure 栈并固定**明文 UDP**，主程序不需要 | **已决策：暂缓**（2026-09-11）。先满足 p2premote 项目需求，完整复刻以后再说 |
+| **WX3 gonc 应用层**（netcat CLI、mux、socks5 server、文件分享、PTY shell、端口轮换、ACL） | 属于 gonc 工具本体，不属于打洞库定位 | **已决策：暂缓**（同上） |
 
-> 待决策问题见 §6。若用户确认"完整复刻"仅指打洞核心，则 WX2/WX3 永久搁置。
+> 决策记录见 §6（2026-09-11 三项待决策问题已全部裁定）。
 
 ## 2. 阶段计划
 
@@ -40,8 +40,10 @@
 
 - [x] 创建开发 worktree（`../p2premote-punch-rs-gonc`，分支 `dev/replicate-gonc`），master 保持稳定
 - [x] 撰写 PROJECT.md / ROADMAP.md
-- [ ] 调研 Win7 的 Rust 交付路径：tier-3 target `x86_64-win7-windows-msvc` / `i686-win7-windows-msvc`
-      可用性、与 1.94.1 工具链 pin 的冲突及 std-external 一致性影响
+- [ ] 调研 **Rust 打洞库**的 Win7 交付路径（分工已定：WG 数据面由 Go go120 wgonly DLL
+      承担，不在本项目范围）：tier-3 target `x86_64-win7-windows-msvc` /
+      `i686-win7-windows-msvc` 可用性、与 1.94.1 工具链 pin 的冲突及 std-external
+      一致性影响
 - [ ] 搭建 Ubuntu 18.04 验证环境（容器或实机），固化 musl `.a` + 源码集成冒烟脚本
 
 ### P1 TCP4 打洞（最大功能差距，优先级最高）
@@ -100,19 +102,19 @@ gonc 参照：`p2p.go:2393-2613`（`nat-exchange-wait/<uid>` topic、`SYN@tid`/`
 
 任务：
 1. Ubuntu 18.04：musl `.a` 与源码集成两条路径实机冒烟（P0 环境上执行）
-2. Win7：按 P0 调研结论落地交付物（可能需要独立工具链 profile 与 win7 target；
-   若决策为 Win7 继续用 Go go120 wgonly DLL，则本项缩小为打洞库验证）
+2. Win7：按 P0 调研结论落地 **Rust 打洞库**交付物（可能需要独立工具链 profile 与
+   win7 target；WG 数据面由 Go go120 wgonly DLL 承担，不在本项目范围）
 3. 全回归：离线 FFI 测试 + c-tests + go-interop 全矩阵（udp4/tcp4/v6/lan/exchange）
    + 实网 live tests
 
 验收：目标老系统冒烟通过；BUILD.md 更新交付矩阵。
 
-### 并行 WX1：userspace WireGuard 数据面（独立于 gonc 复刻）
+### 并行 WX1：userspace WireGuard 数据面（已取消）
 
-参照 `p2premote-punch/punchffi/subnet_router_windows.go`（wintun + wireguard-go + gVisor）
-与 `userspace_wg_darwin.go`（utun）。Rust 技术选型候选：boringtun + wintun/utun +
-smoltcp（或自评估 gVisor 等价物）；`GenerateWgKeypair` 用 x25519 实现先行补齐。
-验收标准对齐 Go 侧 FFI 语义（session 限制、状态回传字段）。
+原计划用 boringtun + wintun/utun + 用户态 TCP 栈在 Rust 侧复刻 WG 数据面。
+2026-09-11 决策取消：Win7 终态为长期维持 "Go go120 wgonly DLL + Rust 打洞库"
+分工，Win/Mac 的 WG 数据面继续由 Go DLL（p2premote-wg-ffi）承担；
+Rust 侧的 WG 相关 FFI（`GenerateWgKeypair` 等）维持现状（桩，由 Go 侧提供）。
 
 ## 3. 测试与验收策略（贯穿所有阶段）
 
@@ -130,7 +132,7 @@ smoltcp（或自评估 gVisor 等价物）；`GenerateWgKeypair` 用 x25519 实�
 | 目标系统 | 交付形态 | 现状 |
 |---|---|---|
 | Ubuntu 18.04 / 老 glibc Linux | musl 静态 `.a`（`NEEDED=0`）/ 源码集成 | ✅ WSL 已验证，待 18.04 实机确认 |
-| Windows 7 | 待定（win7 tier-3 target 或维持 Go DLL 分工） | ⏳ P0 调研 |
+| Windows 7 | Rust 打洞库（win7 target 待 P0 调研）+ Go go120 wgonly DLL（WG 数据面） | ⏳ P0 调研 |
 | Windows 10+ | 源码集成（现走 master） | ✅ |
 | Android | Go aar（不在本路线图） | — |
 
@@ -138,20 +140,23 @@ smoltcp（或自评估 gVisor 等价物）；`GenerateWgKeypair` 用 x25519 实�
 
 | 风险 | 缓解 |
 |---|---|
-| win7 tier-3 target 维护性差、与 1.94.1 工具链 pin 冲突 | P0 先调研出结论再承诺；保留"Win7 用 Go go120 wgonly DLL"的分工退路 |
+| win7 tier-3 target 维护性差、与 1.94.1 工具链 pin 冲突 | 分工已定（WG 走 Go go120 DLL，Rust 只交付打洞库）；剩余风险集中在打洞库自身的 win7 target 可用性，P0 调研出结论再承诺 |
 | 公网 MQTT/STUN broker 不可控 | 测试容忍多 broker 任一可用；本地起 mosquitto 做确定性用例 |
 | TCP 打洞 800 并发 dial 的 fd/内存峰值 | 压测并设上限；Linux ulimit 文档化 |
-| Go/Rust 双库并存期协议漂移 | `protocol/client-client` schema 为真源，互通测试锁定 |
-| WX1 用户态 TCP 栈选型（smoltcp vs 其他） | 先做 spike 对比吞吐/语义，再定 |
+| Go/Rust 双库并存期协议漂移 | `protocol/client-client` schema 为真源，互通测试锁定（punchffi 废弃完成后此风险自然消除） |
 
-## 6. 待决策问题（影响排期，需确认）
+## 6. 决策记录（2026-09-11，原待决策问题已全部裁定）
 
-1. **"完整复刻 gonc"的边界**：仅打洞核心（easyp2p + netx，推荐），还是包含 secure 层
-   与 CLI 工具本体（WX2/WX3）？
-2. **Win7 终态**：Rust 全量替换（含 WX1 WG 数据面），还是 Win7 长期维持
-   "Go go120 wgonly DLL + Rust 打洞库"分工？
-3. **FFI 契约演进方式**：tcp4 等新枚举是否同步推进 Go 端 punchffi 与
-   `protocol/client-client` 规范升级（三端对齐节奏）？
+1. **"完整复刻 gonc"的边界**：只复刻**打洞核心**（easyp2p + 相关 netx 原语），
+   先满足 p2premote 项目需求；secure 层与 gonc 应用层（WX2/WX3）**暂缓**，
+   完整功能以后再说。
+2. **Win7 终态**：长期维持 **"Go go120 wgonly DLL（WG 数据面）+ Rust 打洞库"** 分工。
+   Rust 侧只需保证打洞库可在 Win7 交付（P0 调研 win7 target）；
+   userspace WG 数据面复刻（WX1）取消。
+3. **Go 端 punchffi**：**不再维护，后续废弃**。新特性（tcp4/v6 等网络枚举、唤醒等）
+   只落地 Rust 与 `protocol/client-client` 规范，无需同步 Go punchffi；
+   Go 侧代码（gonc-main / p2premote-punch）保留为参照与互测对手（go-interop 在
+   punchffi 废弃完成前仍有效）。
 
 ## 7. 分支与交付节奏
 

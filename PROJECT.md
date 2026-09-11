@@ -40,8 +40,12 @@ p2premote-punch (Go)
 p2premote-punch-rs (本项目)
    │  源码 path 依赖（Linux）/ 剥离 rustlib 的静态库 .a
    ▼
-p2premote-desktop-client   消费方（Windows/macOS 目前仍用 Go DLL/dylib）
+p2premote-desktop-client   消费方（打洞：Linux 走 Rust 源码集成；Win/Mac 过渡期仍用 Go DLL/dylib）
 ```
+
+> **分工决策（2026-09-11）**：Win7 长期维持 "Go go120 wgonly DLL（WG 数据面）+
+> Rust 打洞库" 分工；Go 端 punchffi **不再维护、后续废弃**——打洞新特性
+> （tcp4/v6/唤醒等）只落地 Rust 与 `protocol/client-client` 规范。
 
 ## 3. 当前实现状态
 
@@ -76,8 +80,8 @@ p2premote-desktop-client   消费方（Windows/macOS 目前仍用 Go DLL/dylib�
 | MQTT 唤醒（wait/hello） | 无 | `easyp2p/p2p.go:2393-2613` |
 | 参数可配置（STUN/broker/TTL/端口数） | 硬编码常量 | gonc 导出变量可被 CLI 覆盖 |
 | NAT 类型独立查询入口 | 仅内部使用 | `DetectNATAddressInfo`（-nat-checker） |
-| userspace WireGuard 数据面（Win/Mac） | 全部桩返回 unsupported（`src/platform.rs`） | （p2premote 扩展，非 gonc 范畴） |
-| `GenerateWgKeypair` | 桩返回错误 | （p2premote 扩展） |
+| userspace WireGuard 数据面（Win/Mac） | 全部桩返回 unsupported（`src/platform.rs`） | **决策：不做**（WX1 取消，WG 数据面长期由 Go DLL 承担） |
+| `GenerateWgKeypair` | 桩返回错误 | 维持桩（由 Go 侧/DLL 提供） |
 | secure 层（TLS/DTLS/KCP/SS） | 未实现 | gonc 有；p2premote-punch 已删除并固定明文 UDP |
 
 ## 4. 代码结构
@@ -185,4 +189,4 @@ worktree 相关注意：`dist/`、`target/` 均被 gitignore，worktree 内首�
 | 文档 | 内容 |
 |---|---|
 | [GONC_DESIGN.md](GONC_DESIGN.md) | **gonc 打洞逻辑详细设计文档**：全部穿透流程的状态机/时序/报文格式/常量（STUN 探测、MQTT 信令、地址交换、候选与角色、UDP/TCP 打洞、LAN 直连与 probe、SOCKS5 中继、唤醒、CLI 竞速仲裁、netx 原语），复刻时的协议行为参照 |
-| [ROADMAP.md](ROADMAP.md) | 复刻路线图：阶段划分、验收标准、老系统兼容矩阵、风险与待决策问题 |
+| [ROADMAP.md](ROADMAP.md) | 复刻路线图：阶段划分、验收标准、老系统兼容矩阵、风险与决策记录 |
