@@ -382,9 +382,10 @@ async fn stun_query(conn: &mut StunConn, deadline: Instant) -> std::result::Resu
 
 // ============ dial + probe ============
 
-/// Resolve a STUN target, preferring IPv4 (the FFI path is udp4/tcp4 only;
-/// Go's ResolveUDPAddr("udp4", ...) filters the same way).
-async fn resolve_stun_target(host: &str, port: &str) -> std::result::Result<SocketAddr, String> {
+/// Resolve a STUN target for the network family. Go's
+/// ResolveTCPAddr("tcp6", …) fails when there is no AAAA record — no
+/// cross-family fallback here either.
+async fn resolve_stun_target(host: &str, port: &str, ipv6: bool) -> std::result::Result<SocketAddr, String> {
     use tokio::net::lookup_host;
     let target = format!("{}:{}", host, port);
     let addrs: Vec<SocketAddr> = lookup_host(target)
@@ -392,11 +393,9 @@ async fn resolve_stun_target(host: &str, port: &str) -> std::result::Result<Sock
         .map_err(|e| format!("resolve failed: {}", e))?
         .collect();
     addrs
-        .iter()
-        .find(|a| a.is_ipv4())
-        .or_else(|| addrs.first())
-        .copied()
-        .ok_or_else(|| "no address".to_string())
+        .into_iter()
+        .find(|a| a.is_ipv6() == ipv6)
+        .ok_or_else(|| "no address for network family".to_string())
 }
 
 async fn dial_stun_conn(
@@ -413,11 +412,12 @@ async fn dial_stun_conn(
     let port_str = port.to_string();
 
     let is_tcp = network.starts_with("tcp");
+    let is_ipv6 = network.ends_with('6');
     if is_tcp {
-        let primary = resolve_stun_target(&host, &port_str).await?;
+        let primary = resolve_stun_target(&host, &port_str, is_ipv6).await?;
         let mut targets = vec![primary];
         for extra in &extra_ports {
-            if let Ok(addr) = resolve_stun_target(&host, extra).await {
+            if let Ok(addr) = resolve_stun_target(&host, extra, is_ipv6).await {
                 targets.push(addr);
             }
         }
@@ -451,7 +451,7 @@ async fn dial_stun_conn(
         }
     } else {
         let mux = udp_mux.ok_or("no udp mux")?;
-        let primary = resolve_stun_target(&host, &port_str).await?;
+        let primary = resolve_stun_target(&host, &port_str, is_ipv6).await?;
         if extra_ports.is_empty() {
             let conn = mux.connect(primary).await.map_err(|e| e.to_string())?;
             Ok(StunConn {
@@ -465,7 +465,7 @@ async fn dial_stun_conn(
             let mut remotes = Vec::new();
             let mut local = local_any();
             for target_port in std::iter::once(port_str.as_str()).chain(extra_ports.iter().copied()) {
-                if let Ok(addr) = resolve_stun_target(&host, target_port).await {
+                if let Ok(addr) = resolve_stun_target(&host, target_port, is_ipv6).await {
                     if let Ok(conn) = mux.connect(addr).await {
                         local = conn.local_addr();
                         remotes.push(addr);
@@ -477,7 +477,7 @@ async fn dial_stun_conn(
             }
             // One forwarder task per port: first data wins (RaceConn).
             for target_port in std::iter::once(port_str.as_str()).chain(extra_ports.iter().copied()) {
-                if let Ok(addr) = resolve_stun_target(&host, target_port).await {
+                if let Ok(addr) = resolve_stun_target(&host, target_port, is_ipv6).await {
                     if let Ok(mut conn) = mux.connect(addr).await {
                         let index = remotes.iter().position(|r| *r == addr).unwrap_or(0);
                         let tx = tx.clone();
@@ -710,9 +710,10 @@ pub async fn get_networks_public_ips(
     let mut tasks = Vec::new();
     let mut udp_attempt_number = 0usize;
     for network in network_list {
+        let is_ipv6 = network.ends_with('6');
         let mut bind_candidate = bind_owned.clone();
         if udp_attempt_number > 0 && bind_unspecified {
-            if let Ok(port) = netx::get_free_port() {
+            if let Ok(port) = netx::get_free_port_for(is_ipv6) {
                 bind_candidate = format!(":{}", port);
             }
         }

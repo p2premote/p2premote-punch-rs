@@ -303,7 +303,7 @@ async fn establish_udp_tunnel_p2p(
 
     // LAN traversal.
     let lan_scope = scope.child(scope.bounded_timeout(Duration::from_secs(20)));
-    let lan_transport = if network == "tcp4" { "tcp" } else { "udp" };
+    let lan_transport = if network.starts_with("tcp") { "tcp" } else { "udp" };
     let lan_result = lan::easy_p2p_lan(&lan_scope, token, lan_transport, lan_scope.remaining(), role_hint == "passive").await;
     let local_success = lan_result.is_ok();
     let local_outcome = TraversalOutcome {
@@ -365,7 +365,7 @@ pub async fn start_udp_tunnel(req: UdpTunnelInput, budget: Duration) -> Result<S
         return Err(StartError::plain("role_hint is required for coordinated UDP tunnel capabilities"));
     }
     let network = if req.network.is_empty() { "udp4" } else { req.network.as_str() };
-    if network != "udp4" && network != "tcp4" {
+    if !matches!(network, "udp4" | "tcp4" | "udp6" | "tcp6") {
         return Err(StartError::plain(format!("unsupported network for udp tunnel: {}", network)));
     }
     if req.allow_relay {

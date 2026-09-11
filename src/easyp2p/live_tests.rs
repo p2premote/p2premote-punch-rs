@@ -94,8 +94,72 @@ async fn tcp_tunnel_rust_to_rust() {
     tunnel_roundtrip("tcp4", 52840).await;
 }
 
+/// IPv6 forms: same-host peers typically get global (non-ULA) v6 addresses,
+/// which lands in the "same NAT, different network" bucket — this exercises
+/// the TCP +100 simultaneous-open path and the UDP NAT-address route.
+#[tokio::test]
+#[ignore = "hits real MQTT/STUN servers; requires IPv6 connectivity"]
+async fn udp_tunnel_rust_to_rust_v6() {
+    tunnel_roundtrip("udp6", 52850).await;
+}
+
+#[tokio::test]
+#[ignore = "hits real MQTT/STUN servers; requires IPv6 connectivity"]
+async fn tcp_tunnel_rust_to_rust_v6() {
+    // TCP needs at least one easy side; on port-randomizing v6 firewalls both
+    // peers classify hard and the punch is (correctly) refused — treat that
+    // as an environment skip, everything else must succeed.
+    tunnel_roundtrip_inner("tcp6", 52860, true).await;
+}
+
+/// STUN probe over the IPv6 networks (requires IPv6 connectivity).
+#[tokio::test]
+#[ignore = "hits real STUN servers; requires IPv6 connectivity"]
+async fn stun_live_v6() {
+    let scope = Scope::from_timeout(Duration::from_secs(15));
+    let networks = ["udp6".to_string(), "tcp6".to_string()];
+    let results = stun::get_networks_public_ips(&scope, &networks, "", Duration::from_millis(2828))
+        .await
+        .expect("stun phase failed");
+    let ok = results.iter().filter(|r| r.err.is_none()).count();
+    eprintln!("STUN v6 results: {}/{} succeeded", ok, results.len());
+    for r in &results {
+        eprintln!("  [{}] {} local={} nat={} err={:?}", r.index, r.network, r.local, r.nat, r.err);
+    }
+    assert!(ok > 0, "no v6 STUN server answered (no IPv6 connectivity?)");
+}
+
 async fn tunnel_roundtrip(network: &str, echo_port: u16) {
+    tunnel_roundtrip_inner(network, echo_port, false).await;
+}
+
+async fn tunnel_roundtrip_inner(network: &str, echo_port: u16, tolerate_hard_hard_refusal: bool) {
     use crate::types::UdpTunnelResult;
+
+    // Same-host peers share one NAT classification: when the local side is
+    // non-easy the pair is hard×hard and TCP punching is (correctly) refused
+    // — probe first and skip deterministically instead of burning 60s.
+    if tolerate_hard_hard_refusal {
+        let probe_scope = Scope::from_timeout(Duration::from_secs(10));
+        if let Ok(results) = stun::get_networks_public_ips(
+            &probe_scope,
+            &[network.to_string()],
+            "",
+            Duration::from_millis(2828),
+        )
+        .await
+        {
+            let analyzed = stun::analyze_stun_results(&results);
+            let types: Vec<String> = analyzed.iter().map(|a| a.nattype.clone()).collect();
+            if !types.is_empty() && types.iter().all(|t| t != "easy") {
+                eprintln!(
+                    "SKIPPED: local {} classification {:?} is non-easy — same-host peers are hard×hard; TCP punch correctly refused (gonc parity)",
+                    network, types
+                );
+                return;
+            }
+        }
+    }
 
     let wg_port = echo_port + 1;
     let token = format!(

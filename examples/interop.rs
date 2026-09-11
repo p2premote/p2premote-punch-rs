@@ -43,9 +43,11 @@ fn main() {
 }
 
 /// Raw TCP punch against the Go harness (`go run . punch-tcp <token>`): the
-/// client side sends "ping\n", the server side echoes "ACK-ping\n".
+/// client side sends "ping\n", the server side echoes "ACK-ping\n". Optional
+/// second argument is the network (tcp4 default, tcp6 for IPv6).
 fn punch_tcp(args: &[String]) {
     let token = args[0].clone();
+    let network = args.get(1).cloned().unwrap_or_else(|| "tcp4".to_string());
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -56,7 +58,7 @@ fn punch_tcp(args: &[String]) {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
             let scope = Scope::from_timeout(Duration::from_secs(110));
-            let info = match easy_p2p_mp_with_options(&scope, "tcp4", &token, EasyP2PMPOptions::default()).await {
+            let info = match easy_p2p_mp_with_options(&scope, &network, &token, EasyP2PMPOptions::default()).await {
                 Ok(info) => info,
                 Err(err) => {
                     println!("PUNCH_FAILED error={}", err);

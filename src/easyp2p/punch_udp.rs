@@ -561,10 +561,10 @@ async fn send_rdp_ping(
         PUNCHING_RANDOM_PORT_COUNT * remote_nat_ips.len()
     );
     for ip in &remote_nat_ips {
+        let Ok(ip_addr) = ip.parse::<std::net::IpAddr>() else { continue };
         for port in &ports {
-            if let Ok(addr) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-                let _ = socket.send_to(payload, addr).await;
-            }
+            let addr = SocketAddr::new(ip_addr, *port);
+            let _ = socket.send_to(payload, addr).await;
         }
     }
     let _ = remote_udp_addr;

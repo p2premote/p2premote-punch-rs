@@ -116,16 +116,20 @@ func tunnel(args []string) {
 
 func punchTCP(args []string) {
 	if len(args) < 1 {
-		die("usage: punch-tcp <token>")
+		die("usage: punch-tcp <token> [network]")
 	}
 	token := args[0]
+	network := "tcp4"
+	if len(args) > 1 {
+		network = args[1]
+	}
 	logs := io.Writer(os.Stderr)
 	if os.Getenv("GO_QUIET") != "" {
 		logs = io.Discard
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Second)
 	defer cancel()
-	connInfo, err := easyp2p.Easy_P2P_MPWithOptions(ctx, "tcp4", token, easyp2p.EasyP2PMPOptions{LogWriter: logs})
+	connInfo, err := easyp2p.Easy_P2P_MPWithOptions(ctx, network, token, easyp2p.EasyP2PMPOptions{LogWriter: logs})
 	if err != nil {
 		die("punch failed: " + err.Error())
 	}

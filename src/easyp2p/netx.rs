@@ -10,11 +10,15 @@ use socket2::{Domain, Protocol, SockRef, Socket, Type};
 pub const UDP_FORWARD_BUF: usize = 65535;
 
 /// net.ListenUDP equivalent, optionally with SO_REUSEADDR (netx.ControlUDP).
+/// IPv6 binds are v6-only, mirroring Go's "udp6" sockets.
 pub fn listen_udp(bind: SocketAddr, reuse_addr: bool) -> io::Result<StdUdpSocket> {
     let domain = if bind.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
     if reuse_addr {
         socket.set_reuse_address(true)?;
+    }
+    if bind.is_ipv6() {
+        socket.set_only_v6(true)?;
     }
     socket.bind(&socket2::SockAddr::from(bind))?;
     // Go's net package disables SIO_UDP_CONNRESET by default on Windows so
@@ -48,9 +52,15 @@ fn disable_udp_connreset(socket: &Socket) {
     }
 }
 
-/// netx.SetUDPTTL: IP_TTL on a UDP socket.
+/// netx.SetUDPTTL: IP_TTL (v4) or IPV6_UNICAST_HOPS (v6).
 pub fn set_udp_ttl(socket: &tokio::net::UdpSocket, ttl: u32) -> io::Result<()> {
-    SockRef::from(socket).set_ttl_v4(ttl)
+    let is_v6 = socket.local_addr().map(|a| a.is_ipv6()).unwrap_or(false);
+    let sref = SockRef::from(socket);
+    if is_v6 {
+        sref.set_unicast_hops_v6(ttl)
+    } else {
+        sref.set_ttl_v4(ttl)
+    }
 }
 
 #[allow(dead_code)]
@@ -135,12 +145,21 @@ pub async fn connect_tcp_bind(
     socket.connect(target).await
 }
 
-/// GetFreePort: a port bindable by both TCP and UDP.
-pub fn get_free_port() -> io::Result<u16> {
+/// GetFreePort: a port bindable by both TCP and UDP, per family.
+pub fn get_free_port_for(ipv6: bool) -> io::Result<u16> {
     for _ in 0..100 {
-        let tcp = TcpListener::bind("0.0.0.0:0")?;
+        let tcp = if ipv6 {
+            TcpListener::bind("[::]:0")?
+        } else {
+            TcpListener::bind("0.0.0.0:0")?
+        };
         let port = tcp.local_addr()?.port();
-        match StdUdpSocket::bind(("0.0.0.0", port)) {
+        let udp = if ipv6 {
+            StdUdpSocket::bind((std::net::Ipv6Addr::UNSPECIFIED, port))
+        } else {
+            StdUdpSocket::bind(("0.0.0.0", port))
+        };
+        match udp {
             Ok(udp) => {
                 drop(udp);
                 drop(tcp);
@@ -153,6 +172,11 @@ pub fn get_free_port() -> io::Result<u16> {
         }
     }
     Err(io::Error::new(io::ErrorKind::AddrInUse, "no free TCP/UDP ports available"))
+}
+
+/// GetFreePort (IPv4 form, the netx.GetFreePort default).
+pub fn get_free_port() -> io::Result<u16> {
+    get_free_port_for(false)
 }
 
 /// Wait with deadline, returning remaining time budget style used by copy loops.
