@@ -138,7 +138,9 @@ gonc 参照：`p2p.go:2393-2613`（`nat-exchange-wait/<uid>` topic、`SYN@tid`/`
    （rustup 1.94.1 + musl-gcc + `RUSTFLAGS='-C linker=musl-gcc'`），在 18.04.6
    rootfs chroot 内与 Windows 上的 Go 完成 **MQTT 唤醒互通**（DNS/TLS/MQTT 全链路），
    `ldd` 确认静态链接
-2. ⏳ Win7 交付物：按 P0 结论需 nightly + `-Z build-std` 通道，待需要时搭建
+2. ⏳ Win7 交付物：全平台 DLL 决策后简化——1.77 工具链（最后的 Win7 兼容 stable，
+   标准 tier-1 target）编译同一 cdylib 即可，无需 nightly/build-std；需 pin 依赖
+   到 1.77 兼容版本。待 Win7 客户端排期时执行
 3. ⏳ 全回归矩阵：2026-09-11 已覆盖 udp4/tcp4/udp6 的 Rust↔Rust FFI 全链路、
    tcp4/tcp6/唤醒的 Go↔Rust 互通、18.04 冒烟；**跨 NAT easy×easy +100 同时打开
    路径**需双机环境，待有条件时补验
@@ -194,7 +196,11 @@ Rust 侧的 WG 相关 FFI（`GenerateWgKeypair` 等）维持现状（桩，由 G
    （WG 数据面）+ Rust 打洞库"** 分工——WG 数据面在所有平台由 go120 基线模块
    （p2premote-wg-ffi）承担，Rust 负责全部打洞能力。Win7 需 P0 调研 win7 target；
    Android 的 Rust 打洞库集成方式后续排期；userspace WG 数据面复刻（WX1）取消。
-3. **Go 端 punchffi**：**不再维护，后续废弃**。新特性（tcp4/v6 等网络枚举、唤醒等）
+3. **全平台动态库形态**（2026-09-11 追加）：punch-rs 所有平台统一 cdylib + C ABI
+   交付（`dist/windows-x86_64/*.dll`、`dist/linux-x86_64-gnu.2.27/*.so`），主客户
+   端 C 接口调用。工具链解耦；Win7 交付简化为 1.77 工具链编译同一 cdylib。
+   源码集成与 std-external 静态库降为备选。
+4. **Go 端 punchffi**：**不再维护，后续废弃**。新特性（tcp4/v6 等网络枚举、唤醒等）
    只落地 Rust 与 `protocol/client-client` 规范，无需同步 Go punchffi；
    Go 侧代码（gonc-main / p2premote-punch）保留为参照与互测对手（go-interop 在
    punchffi 废弃完成前仍有效）。

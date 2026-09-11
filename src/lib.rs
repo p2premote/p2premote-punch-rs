@@ -468,109 +468,110 @@ fn encode_exchange_result(result: &ExchangeResult) -> String {
 // ============ exported C ABI ============
 
 #[cfg(feature = "ffi")]
+/// Panic-guarded FFI dispatcher: a Rust panic must never unwind across the
+/// C ABI (UB for the DLL host). Every JSON-in/JSON-out export goes through
+/// this wrapper.
+#[cfg(feature = "ffi")]
+fn ffi_guard<F: FnOnce(&str) -> String>(input: *const c_char, body: F) -> *mut c_char {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match unsafe { input_to_string(input) } {
+            Some(s) => body(&s),
+            None => NULL_INPUT.to_string(),
+        }
+    }));
+    alloc_cstring(match outcome {
+        Ok(out) => out,
+        Err(_) => r#"{"ok":false,"error":"internal error: punch library panicked"}"#.to_string(),
+    })
+}
+
+/// Panic-guarded wrapper for exports that ignore their input entirely (Go
+/// semantics: null input still returns the result).
+#[cfg(feature = "ffi")]
+fn ffi_guard_body<F: FnOnce() -> String>(body: F) -> *mut c_char {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    alloc_cstring(match outcome {
+        Ok(out) => out,
+        Err(_) => r#"{"ok":false,"error":"internal error: punch library panicked"}"#.to_string(),
+    })
+}
+
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StartUdpTunnel(input: *const c_char) -> *mut c_char {
-    match unsafe { input_to_string(input) } {
-        Some(s) => alloc_cstring(handle_start_udp_tunnel_json(&s)),
-        None => alloc_cstring(NULL_INPUT.to_string()),
-    }
+    ffi_guard(input, handle_start_udp_tunnel_json)
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopUdpTunnel(input: *const c_char) -> *mut c_char {
-    match unsafe { input_to_string(input) } {
-        Some(s) => alloc_cstring(handle_stop_udp_tunnel_json(&s)),
-        None => alloc_cstring(NULL_INPUT.to_string()),
-    }
+    ffi_guard(input, handle_stop_udp_tunnel_json)
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StartSubnetRouter(input: *const c_char) -> *mut c_char {
-    match unsafe { input_to_string(input) } {
-        Some(s) => alloc_cstring(handle_start_subnet_router_json(&s)),
-        None => alloc_cstring(NULL_INPUT.to_string()),
-    }
+    ffi_guard(input, handle_start_subnet_router_json)
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopSubnetRouter(input: *const c_char) -> *mut c_char {
-    match unsafe { input_to_string(input) } {
-        Some(s) => alloc_cstring(handle_stop_subnet_router_json(&s)),
-        None => alloc_cstring(NULL_INPUT.to_string()),
-    }
+    ffi_guard(input, handle_stop_subnet_router_json)
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn GetSubnetRouterStatus(input: *const c_char) -> *mut c_char {
-    match unsafe { input_to_string(input) } {
-        Some(s) => alloc_cstring(handle_get_subnet_router_status_json(&s)),
-        None => alloc_cstring(NULL_INPUT.to_string()),
-    }
+    ffi_guard(input, handle_get_subnet_router_status_json)
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn GetWgCapabilities(_input: *const c_char) -> *mut c_char {
-    alloc_cstring(encode_json(&platform::platform_wg_capabilities()))
+    ffi_guard_body(|| encode_json(&platform::platform_wg_capabilities()))
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn GenerateWgKeypair(_input: *const c_char) -> *mut c_char {
-    alloc_cstring(encode_json(&platform::generate_wg_keypair()))
+    ffi_guard_body(|| encode_json(&platform::generate_wg_keypair()))
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StartWindowsWgPeer(input: *const c_char) -> *mut c_char {
-    match unsafe { input_to_string(input) } {
-        Some(s) => alloc_cstring(handle_start_windows_wg_peer_json(&s)),
-        None => alloc_cstring(NULL_INPUT.to_string()),
-    }
+    ffi_guard(input, handle_start_windows_wg_peer_json)
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopWindowsWgPeer(input: *const c_char) -> *mut c_char {
-    match unsafe { input_to_string(input) } {
-        Some(s) => alloc_cstring(handle_windows_wg_peer_json(&s, platform::stop_userspace_wg_peer)),
-        None => alloc_cstring(NULL_INPUT.to_string()),
-    }
+    ffi_guard(input, |s| handle_windows_wg_peer_json(s, platform::stop_userspace_wg_peer))
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn GetWindowsWgPeerStatus(input: *const c_char) -> *mut c_char {
-    match unsafe { input_to_string(input) } {
-        Some(s) => alloc_cstring(handle_windows_wg_peer_json(&s, platform::get_userspace_wg_peer_status)),
-        None => alloc_cstring(NULL_INPUT.to_string()),
-    }
+    ffi_guard(input, |s| handle_windows_wg_peer_json(s, platform::get_userspace_wg_peer_status))
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn SetWindowsWgPeerAllowed(input: *const c_char) -> *mut c_char {
-    match unsafe { input_to_string(input) } {
-        Some(s) => alloc_cstring(handle_windows_wg_peer_allowed_json(&s)),
-        None => alloc_cstring(NULL_INPUT.to_string()),
-    }
+    ffi_guard(input, handle_windows_wg_peer_allowed_json)
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopWindowsWgEngine(_input: *const c_char) -> *mut c_char {
-    alloc_cstring(encode_json(&platform::stop_userspace_wg_engine()))
+    ffi_guard_body(|| encode_json(&platform::stop_userspace_wg_engine()))
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn CleanupWindowsWgPlatform(_input: *const c_char) -> *mut c_char {
-    alloc_cstring(encode_json(&platform::cleanup_userspace_wg_platform()))
+    ffi_guard_body(|| encode_json(&platform::cleanup_userspace_wg_platform()))
 }
 
 // Generic userspace-WG ABI v2. The Windows-named exports above remain as
@@ -623,10 +624,7 @@ pub extern "C" fn FreeCString(ptr: *mut c_char) {
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn Exchange(input: *const c_char) -> *mut c_char {
-    match unsafe { input_to_string(input) } {
-        Some(s) => alloc_cstring(handle_exchange_json(&s)),
-        None => alloc_cstring(NULL_INPUT.to_string()),
-    }
+    ffi_guard(input, handle_exchange_json)
 }
 
 // Keep a C-visible marker so accidental double-definition with the Go library

@@ -163,8 +163,10 @@ pub fn start_udp_tunnel_json(input: &str) -> String   // JSON 便捷版 ×3
 
 ## 7. 构建与集成（详见 BUILD.md）
 
-- **主路径 = 源码集成**：桌面客户端 Linux 链路以 path 依赖引入本 crate；`ffi` feature
-  可关闭以去掉 C ABI 导出。
+- **主路径 = 动态库交付（2026-09-11 决策）**：所有平台统一 cdylib + C ABI
+  （`dist/windows-x86_64/*.dll`、`dist/linux-x86_64-gnu.2.27/*.so`），主客户端
+  C 接口调用，工具链与客户端彻底解耦。备选 = 源码集成（path 依赖，可关 `ffi`
+  feature）与 std-external 静态库。
 - **备选 = 静态库交付**：`cargo build --release --lib --target *-musl` 产自包含 `.a`；
   供 Rust 宿主必须先 `scripts/strip-rustlib.sh` 剥离 rustlib，且两端同版本工具链。
 - 工具链锁定 1.94.1（与 p2premote-desktop-client 一致）。

@@ -104,6 +104,30 @@ GetWindowsWgPeerStatus SetWindowsWgPeerAllowed`。另有链接期冲突标记
 - 已知实现细节差异（不影响协议互通）：STUN 重传节奏、随机数源、rumqttc 与
   paho 的重连细节；均有 burst 重发与 QoS1 保证兜底。
 
+## 动态库交付（全平台统一形态，2026-09-11 决策）
+
+**决策：所有平台统一以 cdylib（动态库）+ C ABI JSON 契约交付**，主客户端通过
+C 接口调用——与原 Go DLL 模型同构。收益：客户端与打洞库的 Rust 工具链彻底解耦
+（客户端可独立升级，无需同版本 std 约束）；Win7 交付简化为"用 1.77 工具链编同
+一个 cdylib"；部署形态与现有 Go DLL 一致。源码集成与 std-external 静态库降为
+备选路径。
+
+- crate-type 增加 `cdylib`；全部 JSON-in/JSON-out 导出经 panic 防护包装
+  （Rust panic 不跨 C ABI 边界，返回内部错误 JSON）；四个忽略输入的导出
+  （GetWgCapabilities 等）保持 Go 语义（null 输入仍返回结果）。
+- 产物（master `dist/`，dist 不入 git）：
+  - `windows-x86_64/p2premote_punch.dll`（+ `.dll.lib` 导入库）——已用 P/Invoke
+    实测加载并调用（ABI=2、caps JSON 正确）
+  - `linux-x86_64-gnu.2.27/libp2premote_punch.so`——cargo-zigbuild 以
+    glibc 2.27 基线链接（实测符号版本上限 GLIBC_2.25），已在 **Ubuntu 18.04.6
+    chroot 内 dlopen + 调用**验证
+  - musl 静态 `.a` 双架构保留（C 宿主静态链接备选）
+- Linux `.so` 构建（WSL）：`cargo zigbuild --release --lib --target
+  x86_64-unknown-linux-gnu.2.27`（zig 0.13；注意裸 zig cc 处理 rustc 的
+  `-shared -nodefaultlibs` 有 Scrt1 怪癖，必须用 cargo-zigbuild）
+- macOS dylib 待 mac 环境产出（同一 crate-type，无代码差异）
+- 客户端接入：`P2PremotePunchRsAbiVersion()` 应在加载后校验（期望 2）
+
 ## 交付物（2026-09-11 重产）
 
 `dist/{x86_64,aarch64}-unknown-linux-musl/libp2premote-punch.a` 为 std-external

@@ -7,7 +7,7 @@ license = "MIT"
 
 [lib]
 name = "p2premote_punch"
-crate-type = ["staticlib", "rlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = ["ffi"]
