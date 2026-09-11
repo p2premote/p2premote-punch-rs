@@ -77,36 +77,55 @@ gonc 参照：`p2p.go:1886-2391`（Auto_P2P_TCP_NAT_Traversal）+ `netx/control_
 - 限制：单机环境只覆盖同 LAN 直连路径；easy×easy +100 同时打开与 RDP/RSP
   生日悖论路径需跨 NAT 环境验证（列入 P5 全量回归）
 
-### P2 IPv6 与全网络矩阵
+### P2 IPv6 与全网络矩阵 ✅ 2026-09-11 完成
 
-任务：
-1. `networks_for_stun("any")` → `[tcp6, tcp4, udp4]`（对齐 gonc）；显式 `udp6` 支持
-2. v6 socket 绑定、本机地址枚举（`if-addrs` 已有，补 v6 过滤与 scope 处理）
-3. STUN XOR-MAPPED-ADDRESS v6 解析已有；补 v6 NAT 分类与候选构造路径
-4. LAN 判定的同 /64 规则已有，接线验证
+任务（原计划基础上按现状调整）：
+1. ✅ `resolve_stun_target` 按网络族过滤（去掉 v4 优先，Go 无跨族回退）
+2. ✅ netx：v6-only UDP 绑定（Go "udp6" 等价）、`set_udp_ttl` 分派
+   IP_TTL/IPV6_UNICAST_HOPS、按族空闲端口探测
+3. ✅ punch_udp RDP 喷雾正确构造 v6 地址（`SocketAddr::new`）
+4. ✅ `udp_tunnel` 闸口放行 `udp6`/`tcp6`；多网络探测按族分配端口
+5. ✅ `networks_for_stun` 全矩阵（含 any/any6/any4/tcp/udp）原本已就绪
 
-验收：v6 环境（本机 v6 + 公网 v6）Rust↔Go 互通；`any` 模式下网络优选顺序
-tcp6 > tcp4 > udp4 生效。
+验收结论（2026-09-11 实测）：
+- **Go↔Rust tcp6 互通**：hard×easy 组合经 **+100 端口位移 + RSP 600 随机源端口
+  生日悖论** 打通，ping/ACK 双向回环（比 tcp4 首验更深的路径覆盖）
+- Rust↔Rust udp6 FFI 全链路通过；tcp6 在本机 hard×hard 下按 gonc 语义正确拒绝
+  （live test 预探测确定性跳过）
+- 本机运营商 v6 防火墙一致改写源端口（hard），Go 侧分类为 easy 的差异源于
+  运营商对不同流的行为，非实现分歧
 
-### P3 MQTT 唤醒（MqttWait / MQTTHello）
+### P3 MQTT 唤醒（MqttWait / MQTTHello）✅ 2026-09-11 完成
 
 gonc 参照：`p2p.go:2393-2613`（`nat-exchange-wait/<uid>` topic、`SYN@tid`/`ACK@tid`、
 `HelloPayload` 字符串化 `";k=v;k=v|App::Param"`）。
 
-任务：wait/hello 原语 + topic salt 贯通（`Mqtt_ensure_ready` 流程）；
-按主程序需要决定是否暴露到 FFI。
+任务：
+1. ✅ `src/easyp2p/wake.rs`：唤醒 topic 派生（`"nat-exchange-wait/" +
+   deriveKeyForTopic("mqtt-topic-gonc-wait", uid)`）、HelloPayload
+   `";k=v|App::Param"` 编解码（首段为随机 tid）、`mqtt_wait_session`（waitOnly +
+   `SYN@` 前缀过滤 + 首选 broker 回 `ACK@tid` 15s）、`mqtt_hello_session`
+   （mutual burst + `ACK@` 逐字节校验）、便捷包装 5s 延迟关会话
+2. ✅ FFI 暴露按决策暂缓（主程序需要时再加）；库级 `pub` 可直接调用
 
-验收：与 Go CLI `-mqtt-wait` / `-mqtt-hello` 互通唤醒后打洞。
+验收结论（2026-09-11 实测，双向）：
+- **Go wait ↔ Rust hello**：SYN/ACK 逐字节一致，tid `"kF54…|br::someparam"`
+  跨实现完整携带 app/param
+- **Rust wait ↔ Go hello**：同样通过，HelloPayload 解析（salt/control/app/param）正确
 
-### P4 参数化与库 API 对齐
+### P4 参数化与库 API 对齐 ✅ 2026-09-11 完成
 
 任务：
-1. 可配置项：STUN 服务器列表、MQTT broker 列表、`PunchingShortTTL`、
-   `PunchingRandomPortCount`、`TopicExchange`（builder / 环境变量两级）
-2. `DetectNATAddressInfo` 等价入口（Rust api + 可选 FFI），对齐 gonc `-nat-checker`
-3. 复核 `EasyP2PMPOptions` 形态的选项对象（Bind / Multipath / 回调；RelayConn 按决策不实现）
+1. ✅ 可配置项（环境变量级，FFI JSON 契约不动）：`P2PREMOTE_STUN_SERVERS`、
+   `P2PREMOTE_MQTT_BROKERS`、`P2PREMOTE_PUNCH_SHORT_TTL`、
+   `P2PREMOTE_PUNCH_RANDOM_PORTS`、`P2PREMOTE_TOPIC_PREFIX`
+   （gonc 包变量的 Rust 等价；builder 级 API 待主程序需要时再加）
+2. ✅ `api::detect_nat`（-nat-checker 等价，返回逐网络 NAT 分类）
+3. ✅ `EasyP2PMPOptions` 形态保持（Bind；Multipath/回调暂无消费方）
 
-验收：同参数下与 Go 行为一致；参数覆盖经 interop 测试验证。
+验收结论（2026-09-11 实测）：Rust 侧 `P2PREMOTE_MQTT_BROKERS` 收敛到单 broker
+（日志确认 "via 1 MQTT servers"）与 Go 默认全 broker 互通打洞成功——参数覆盖
+生效且不破坏互通。
 
 ### P5 老系统交付与全量回归
 
