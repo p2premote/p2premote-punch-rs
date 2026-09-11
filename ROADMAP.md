@@ -40,11 +40,15 @@
 
 - [x] 创建开发 worktree（`../p2premote-punch-rs-gonc`，分支 `dev/replicate-gonc`），master 保持稳定
 - [x] 撰写 PROJECT.md / ROADMAP.md
-- [ ] 调研 **Rust 打洞库**的 Win7 交付路径（分工已定：WG 数据面由 Go go120 wgonly DLL
-      承担，不在本项目范围）：tier-3 target `x86_64-win7-windows-msvc` /
-      `i686-win7-windows-msvc` 可用性、与 1.94.1 工具链 pin 的冲突及 std-external
-      一致性影响
-- [ ] 搭建 Ubuntu 18.04 验证环境（容器或实机），固化 musl `.a` + 源码集成冒烟脚本
+- [x] 调研 **Rust 打洞库**的 Win7 交付路径（2026-09-11）：
+  `x86_64-win7-windows-msvc` / `i686-win7-windows-msvc` 在 rustc target 列表中
+  存在（tier-3），但 1.94.1 工具链**无预编译 std**（`rustup target add` 失败）→
+  Win7 交付需 nightly + `-Z build-std` 产出自包含静态库（不走 std-external 剥离
+  路线，与工具链 pin 无冲突），或等社区预编译。结论：**可行但需额外 nightly 构建
+  通道**，P5 交付时按需搭建。
+- [x] 搭建 Ubuntu 18.04 验证环境（2026-09-11）：WSL Debian + cloud-images
+  bionic 18.04.6 rootfs（chroot 运行）；WSL 内安装 rustup 1.94.1 + musl target
+  交叉构建链已就绪
 
 ### P1 TCP4 打洞（最大功能差距，优先级最高）✅ 2026-09-11 完成
 
