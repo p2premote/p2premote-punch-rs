@@ -147,9 +147,13 @@ gonc 参照：`p2p.go:2393-2613`（`nat-exchange-wait/<uid>` topic、`SYN@tid`/`
    stable，标准 tier-1 target，无需 nightly/build-std/独立通道）；依赖 pin
    `base64ct=1.6.0`、`zeroize=1.7.0`；全量测试在 1.77.2 下通过，同一 DLL 覆盖
    Win7/Win10。⏳ Win7 真机冒烟待排期
-3. ⏳ 全回归矩阵：2026-09-11 已覆盖 udp4/tcp4/udp6 的 Rust↔Rust FFI 全链路、
-   tcp4/tcp6/唤醒的 Go↔Rust 互通、18.04 冒烟；**跨 NAT easy×easy +100 同时打开
-   路径**需双机环境，待有条件时补验
+3. ⏳ 全回归矩阵：已覆盖 udp4/tcp4/udp6 的 Rust↔Rust FFI 全链路、tcp4/tcp6/唤醒的
+   Go↔Rust 互通、18.04 冒烟；**2026-09-12 mac 实测**（iMac Pro / Sonoma 14.8.9 /
+   x86_64 / CLT 15.3 + rust 1.77.2）：punch-rs 23+18 测试全过、no-default-features
+   （源码集成形态）check 通过、客户端 core cargo check 通过，并与 Windows Go
+   **跨机**完成 tcp4 打洞互通与 udp4 隧道全链路（traversal=lan 双端协商）；
+   **跨 NAT easy×easy +100 同时打开路径**仍待跨外网环境补验。注：mac 客户端
+   打包仍需 go120 wgonly dylib 资源（WG 数据面，分工决策内；编译验证用占位文件）
 4. ✅ musl `.a` 交付物重产（2026-09-11）：WSL 构建链产出 x86_64（musl-gcc）与
    aarch64（gnu 交叉 gcc + zig 链接）双架构 staticlib，经 `strip-rustlib.sh` 后
    更新 master `dist/`（40.5MB/40.6MB，22 个 ABI 符号齐全）；c-tests harness
@@ -181,7 +185,7 @@ Rust 侧的 WG 相关 FFI（`GenerateWgKeypair` 等）维持现状（桩，由 G
 |---|---|---|
 | Ubuntu 18.04 / 老 glibc Linux | 打洞：glibc 2.27 基线 `.so` / musl 静态 `.a` / 源码集成；WG：go120 wgonly | ✅ 18.04.6 chroot 实测（dlopen 调用 + 唤醒互通 + C harness） |
 | Windows 7 | 打洞：与其他平台同一路径（源码集成，工具链已统一 1.77.2）；WG：go120 wgonly DLL | ⏳ 构建已就绪，待 Win7 真机冒烟 |
-| Windows 10+ / macOS | 打洞：源码集成（win 已是此路径；mac cfg 已扩展同路径）；WG：go120 wgonly DLL/dylib | ⏳ mac 侧待编译/真机验证 |
+| Windows 10+ / macOS | 打洞：源码集成（win/mac 已实测同路径）；WG：go120 wgonly DLL/dylib | ✅ mac 2026-09-12 实测（见 P5） |
 | Android | 打洞：Rust 库（集成方式待定）；WG：go120 wgonly（aar） | ⏳ 当前全 Go aar，后续排期 |
 
 ## 5. 风险

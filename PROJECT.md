@@ -87,7 +87,7 @@ UDP4 链路自初版即相当完整（并非"简单 demo"），2026-09-11 起补
 | `GenerateWgKeypair` | 维持桩（由 Go 侧提供） |
 | secure 层（TLS/DTLS/KCP/SS） | **暂缓**（gonc 有；p2premote-punch 已删除并固定明文 UDP，主程序不需要） |
 | 跨 NAT easy×easy +100 路径实网验证 | 待双机环境（单机已覆盖同 LAN 直连与 hard×easy RSP 路径） |
-| macOS 编译验证 | 客户端源码集成 cfg 已扩展到 macOS（2026-09-12），与 Linux/Windows 同路径；待 mac 环境编译/真机验证 |
+| ~~macOS 编译验证~~ | ✅ 2026-09-12 mac 实测（Sonoma/1.77.2）：测试全过 + 客户端 core 编译过 + 与 Windows Go 跨机 tcp4/udp4 互通 |
 | Win7 真机冒烟 | 构建兼容已随工具链统一（1.77.2，与客户端相同）解决；待 Win7 真机验证 |
 
 ## 4. 代码结构

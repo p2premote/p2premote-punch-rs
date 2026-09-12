@@ -172,4 +172,5 @@ wsl -d Debian -- /path/to/harness-linux
 | **客户端实链验证（2026-09-08，WSL Debian）**：源码 path 依赖集成，`p2premote-service`/`p2premote-cli` 以 musl + 默认 thin-LTO 构建 | 构建成功；二进制可运行、FFI 符号在位、`NEEDED` 为 0（完全静态、无 glibc）。产物路径（剥离版 `.a` + whole-archive、LTO off）另经最小 Rust 宿主验证 `GetWgCapabilities` 返回正确 JSON |
 | aarch64 musl 产物（WSL 交叉构建 + 剥离） | 21 个导出符号完整（注：历史计数口径；当前 ABI 全集为 22 符号，见上文 ABI 清单） |
 | **gonc 实网互通（2026-09-11）**：tcp4 / tcp6（hard×easy，+100 + RSP 生日悖论）/ 唤醒双向 / 单 broker 参数覆盖 | 全通 |
-| **动态库（2026-09-11）**：win .dll P/Invoke 实测；linux .so（GLIBC_2.25 上限）在 18.04.6 chroot dlopen 调用 | 全通 |
+| **动态库（2026-09-11，后随决策回退废弃）**：win .dll P/Invoke 实测；linux .so（GLIBC_2.25 上限）在 18.04.6 chroot dlopen 调用 | 全通 |
+| **macOS（2026-09-12，iMac Pro/Sonoma 14.8.9/x86_64，CLT 15.3 + rust 1.77.2）**：punch-rs 23 lib + 18 FFI 测试全过；`--no-default-features`（源码集成形态）check 通过；客户端 core cargo check 通过；与 Windows Go 跨机 tcp4 打洞互通 + udp4 隧道全链路（traversal=lan） | 全通 |
