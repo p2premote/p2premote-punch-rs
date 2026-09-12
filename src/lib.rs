@@ -18,7 +18,10 @@ use std::os::raw::{c_char, c_int};
 use types::*;
 
 /// Public request/result types for native Rust integrations.
-pub use types::{ExchangeInput, ExchangeResult, StopTunnelInput, UdpTunnelInput, UdpTunnelResult};
+pub use types::{
+    ExchangeInput, ExchangeResult, GetSubnetRouterStatusInput, StartSubnetRouterInput,
+    StopSubnetRouterInput, StopTunnelInput, SubnetRouterResult, UdpTunnelInput, UdpTunnelResult,
+};
 
 const NULL_INPUT: &str = r#"{"ok":false,"error":"input is null"}"#;
 
@@ -389,6 +392,24 @@ pub mod api {
         handles::stop_udp_tunnel(handle_id);
     }
 
+    /// Manage the Linux subnet-router backend without crossing the C ABI.
+    /// On platforms without a backend the returned result contains `ok=false`
+    /// and the platform-specific explanation.
+    pub fn start_subnet_router(request: types::StartSubnetRouterInput) -> types::SubnetRouterResult {
+        super::subnet_router::start_subnet_router(request)
+    }
+
+    /// Stop a subnet-router session. Unknown handles retain the FFI's
+    /// idempotent-success behavior.
+    pub fn stop_subnet_router(handle_id: &str) -> types::SubnetRouterResult {
+        super::subnet_router::stop_subnet_router(handle_id)
+    }
+
+    /// Return the latest status for a subnet-router session.
+    pub fn get_subnet_router_status(handle_id: &str) -> types::SubnetRouterResult {
+        super::subnet_router::get_subnet_router_status(handle_id)
+    }
+
     /// Execute the MQTT key/address exchange without the C ABI.
     pub async fn exchange(
         request: types::ExchangeInput,
@@ -462,6 +483,16 @@ fn encode_exchange_result(result: &ExchangeResult) -> String {
     match serde_json::to_string(result) {
         Ok(s) => s,
         Err(_) => r#"{"ok":false,"error":"failed to encode exchange result"}"#.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod native_api_tests {
+    #[test]
+    fn subnet_router_status_is_available_without_c_abi() {
+        let result = crate::api::get_subnet_router_status("missing-native-router");
+        assert!(!result.ok);
+        assert!(result.error.contains("not found"));
     }
 }
 
