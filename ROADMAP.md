@@ -181,7 +181,7 @@ Rust 侧的 WG 相关 FFI（`GenerateWgKeypair` 等）维持现状（桩，由 G
 |---|---|---|
 | Ubuntu 18.04 / 老 glibc Linux | 打洞：glibc 2.27 基线 `.so` / musl 静态 `.a` / 源码集成；WG：go120 wgonly | ✅ 18.04.6 chroot 实测（dlopen 调用 + 唤醒互通 + C harness） |
 | Windows 7 | 打洞：与其他平台同一路径（源码集成，工具链已统一 1.77.2）；WG：go120 wgonly DLL | ⏳ 构建已就绪，待 Win7 真机冒烟 |
-| Windows 10+ / macOS | 打洞：源码集成（win 已是此路径；mac 过渡期仍链 Go dylib）；WG：go120 wgonly DLL/dylib | ⏳ mac 打洞切换待排期 |
+| Windows 10+ / macOS | 打洞：源码集成（win 已是此路径；mac cfg 已扩展同路径）；WG：go120 wgonly DLL/dylib | ⏳ mac 侧待编译/真机验证 |
 | Android | 打洞：Rust 库（集成方式待定）；WG：go120 wgonly（aar） | ⏳ 当前全 Go aar，后续排期 |
 
 ## 5. 风险
@@ -205,8 +205,9 @@ Rust 侧的 WG 相关 FFI（`GenerateWgKeypair` 等）维持现状（桩，由 G
 3. **交付形态**（2026-09-11，当日两次裁定，以后者为准）：早先裁定全平台
    cdylib + C ABI；**晚间回退为源码集成为唯一主路径**——工具链统一 1.77.2
    （与客户端一致，Win7 兼容）后单一 Rust 世界无任何耦合问题，主程序直调
-   `api::*`；cdylib 导出与 `dist` 的 DLL/.so 产物已删除，C ABI 仅保留给
-   macOS 过渡 dylib 与静态库备选。
+   `api::*`；cdylib 导出与 `dist` 的 DLL/.so 产物已删除。**macOS 同样为源码
+   集成**（2026-09-12 补充裁定，无 dylib 过渡期，客户端 cfg 已扩展）；C ABI
+   当前无消费者，仅作静态库备选保留。
 4. **Go 端 punchffi**：**不再维护，后续废弃**。新特性（tcp4/v6 等网络枚举、唤醒等）
    只落地 Rust 与 `protocol/client-client` 规范，无需同步 Go punchffi；
    Go 侧代码（gonc-main / p2premote-punch）保留为参照与互测对手（go-interop 在

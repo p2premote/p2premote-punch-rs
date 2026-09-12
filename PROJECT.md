@@ -40,7 +40,7 @@ p2premote-punch (Go)
 p2premote-punch-rs (本项目)
    │  源码 path 依赖（唯一主路径；工具链统一 1.77.2 与客户端一致）
    ▼
-p2premote-desktop-client   消费方（Linux/Windows 直接调 api::*；mac 过渡期打洞走 Go dylib）
+p2premote-desktop-client   消费方（Linux/Windows/macOS 直接调 api::*，同一源码集成路径）
 ```
 
 > **分工决策（2026-09-11）**：**全平台终态**（Win7/Win10/Linux/macOS/Android）统一为
@@ -87,7 +87,7 @@ UDP4 链路自初版即相当完整（并非"简单 demo"），2026-09-11 起补
 | `GenerateWgKeypair` | 维持桩（由 Go 侧提供） |
 | secure 层（TLS/DTLS/KCP/SS） | **暂缓**（gonc 有；p2premote-punch 已删除并固定明文 UDP，主程序不需要） |
 | 跨 NAT easy×easy +100 路径实网验证 | 待双机环境（单机已覆盖同 LAN 直连与 hard×easy RSP 路径） |
-| macOS 切换到源码集成 | mac 客户端过渡期仍链 Go dylib；切 Rust 后与其他平台同路径 |
+| macOS 编译验证 | 客户端源码集成 cfg 已扩展到 macOS（2026-09-12），与 Linux/Windows 同路径；待 mac 环境编译/真机验证 |
 | Win7 真机冒烟 | 构建兼容已随工具链统一（1.77.2，与客户端相同）解决；待 Win7 真机验证 |
 
 ## 4. 代码结构
@@ -133,8 +133,8 @@ src/
 
 ### 5.1 C ABI（`feature = "ffi"` 默认关闭；不在主程序源码集成路径上）
 
-与 Go punchffi 一一对应（详见 BUILD.md 符号清单），仅保留给 macOS 过渡 dylib
-与静态库备选场景：
+与 Go punchffi 一一对应（详见 BUILD.md 符号清单），当前无消费者，仅作静态库
+备选保留：
 
 - **打洞隧道**：`StartUdpTunnel` / `StopUdpTunnel`
 - **子网路由**：`StartSubnetRouter` / `StopSubnetRouter` / `GetSubnetRouterStatus`
@@ -169,8 +169,8 @@ p2premote_punch::{UdpTunnelInput, UdpTunnelResult, ExchangeInput, ExchangeResult
 `easyp2p::wake::{mqtt_wait, mqtt_hello}`（待命唤醒）、`easyp2p::*`（打洞内核
 全部公开，供深度集成）。
 
-C ABI（§5.1，`ffi` feature，默认关闭）不在主程序源码集成路径上，仅保留给
-macOS 过渡 dylib 与静态库备选场景。
+C ABI（§5.1，`ffi` feature，默认关闭）不在主程序源码集成路径上（macOS 亦为
+源码集成，2026-09-12 决策），仅作静态库备选保留。
 
 ## 6. 协议兼容性要点（改动时必须保持）
 

@@ -17,8 +17,10 @@ Linux/Windows 客户端已实际走此路径（`core/src/gonc_ffi.rs` 的
 - `api::exchange(ExchangeInput, timeout)`
 - 类型 `p2premote_punch::{UdpTunnelInput, UdpTunnelResult, ExchangeInput, ExchangeResult}`
 
-C ABI（`ffi` feature，默认关闭）仅保留给 macOS 过渡期的 dylib 与静态库备选；
-动态库交付（cdylib + dist DLL/.so）已于 2026-09-11 决策回退并删除。
+C ABI（`ffi` feature，默认关闭）当前**无消费者**，仅作静态库备选保留。
+动态库交付（cdylib + dist DLL/.so）已于 2026-09-11 决策回退并删除；
+**macOS 亦为源码集成**（2026-09-12 决策，客户端 cfg 已扩展，与 Linux/Windows
+同一路径，待 mac 环境编译验证）。
 
 ## 源码集成细节（客户端现状）
 
