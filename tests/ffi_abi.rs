@@ -52,6 +52,17 @@ fn start_udp_tunnel_rejects_unknown_network() {
 }
 
 #[test]
+fn start_udp_tunnel_accepts_any_network() {
+    // "any" must clear the network gate: pair it with allow_relay so the
+    // request still fails offline, but on the relay check (which runs after
+    // the network validation).
+    let raw = call(StartUdpTunnel, r#"{"token":"tok","network":"any","remote_target_port":51820,"allow_relay":true}"#);
+    assert!(!json_bool(&raw, "ok"));
+    let err = json_str(&raw, "error");
+    assert!(err.contains("relay"), "network gate should accept any, got: {}", err);
+}
+
+#[test]
 fn start_udp_tunnel_rejects_unknown_traversal_mode() {
     let raw = call(
         StartUdpTunnel,

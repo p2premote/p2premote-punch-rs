@@ -103,6 +103,14 @@ async fn udp_tunnel_rust_to_rust_v6() {
     tunnel_roundtrip("udp6", 52850).await;
 }
 
+/// Aggregate network matrix: "any" probes tcp6+tcp4+udp4 and the forward
+/// layer follows whichever transport the punch lands on.
+#[tokio::test]
+#[ignore = "hits real MQTT/STUN servers"]
+async fn tunnel_rust_to_rust_any() {
+    tunnel_roundtrip("any", 52870).await;
+}
+
 #[tokio::test]
 #[ignore = "hits real MQTT/STUN servers; requires IPv6 connectivity"]
 async fn tcp_tunnel_rust_to_rust_v6() {

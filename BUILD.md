@@ -107,11 +107,14 @@ GetWindowsWgPeerStatus SetWindowsWgPeerAllowed`。另有链接期冲突标记
   unsupported 错误；`GenerateWgKeypair` 同样返回错误（与 Go 在 Linux 上一致）；
   caps 中 `userspace_wg=false`。桌面客户端 win/mac 的 WG 数据面在分工终态下
   继续由 go120 wgonly DLL/dylib 承担（决策记录见 ROADMAP §6）。
-- **TCP 打洞已移植（2026-09-11）**：`StartUdpTunnel` 的 `network` 接受 `tcp4`。
-  P2P 传输为 TCP 时，本地前转仍是 UDP 口（WG 消费方即 UDP，FFI JSON 契约零变更），
-  报文以 2 字节小端长度帧（gonc FramedConn 语义）在打洞出的 TCP 流上承载。
-  Go 侧互通经 go-interop `punch-tcp`（底层 `Easy_P2P_MPWithOptions`）实测通过。
-  注意：Go punchffi 已停维护，`network=tcp4` 为 Rust 独有扩展。
+- **全网络矩阵已移植（2026-09-11/14）**：`StartUdpTunnel` 的 `network` 接受
+  gonc NetworksForStun 全矩阵——`udp4/tcp4/udp6/tcp6` 与聚合形式
+  `any/any4/any6/tcp/udp`。`any` 探测 tcp6+tcp4+udp4 并按 gonc 优先级逐候选
+  打洞，本地前转自动跟随命中传输（TCP 时仍为 UDP 前转口 + 2 字节长度帧，
+  FFI JSON 契约零变更）。实测（2026-09-14）：Rust↔Rust `any` 隧道自动回退
+  tcp4 打通；Go↔Rust 双 `any` 自动优选 tcp6 打通。
+  注意：Go punchffi 已停维护，聚合 network 为 Rust 独有扩展（Go 底层
+  `Easy_P2P_MPWithOptions` 同样支持 any，互通无碍）。
 - 日志：默认静默（Go 侧 FFI 也是把日志写进丢弃的 buffer）；设
   `P2PREMOTE_PUNCH_LOG=1` 输出 easyp2p 诊断日志到 stderr。
 - 已知实现细节差异（不影响协议互通）：STUN 重传节奏、随机数源、rumqttc 与

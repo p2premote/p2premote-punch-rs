@@ -151,7 +151,8 @@ default-features = false }`（关 ffi feature，无 C ABI 导出）。主程序�
 （`core/src/gonc_ffi.rs` 的 `*_native` 函数，Linux/Windows 生效）使用的接口：
 
 ```rust
-// 打洞 + 本地前转隧道（network 字段：udp4 | tcp4 | udp6 | tcp6）
+// 打洞 + 本地前转隧道（network 字段：udp4/tcp4/udp6/tcp6 或聚合 any/any4/any6/tcp/udp；
+// any 按 gonc 优先级 tcp6>tcp4>udp4 逐候选探测，前转自动跟随命中传输）
 pub async fn start_udp_tunnel(request: UdpTunnelInput, budget: Duration)
     -> Result<UdpTunnelResult, String>
 // 幂等停止（handle_id 来自返回的 UdpTunnelResult）

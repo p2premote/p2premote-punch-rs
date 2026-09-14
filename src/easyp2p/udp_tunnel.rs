@@ -14,6 +14,7 @@ use super::lan;
 use super::mqtt_signal::{self, MqttSignalSession};
 use super::netx;
 use super::p2p::{self, EasyP2PMPOptions, P2PConn, P2PConnInfo};
+use super::stun;
 use super::{CancelToken, P2pError, Scope, EXMODE_MUTUAL, EXMODE_WAIT_ONLY};
 use crate::types::{UdpTunnelInput, UdpTunnelResult};
 
@@ -365,7 +366,11 @@ pub async fn start_udp_tunnel(req: UdpTunnelInput, budget: Duration) -> Result<S
         return Err(StartError::plain("role_hint is required for coordinated UDP tunnel capabilities"));
     }
     let network = if req.network.is_empty() { "udp4" } else { req.network.as_str() };
-    if !matches!(network, "udp4" | "tcp4" | "udp6" | "tcp6") {
+    // NetworksForStun owns the network matrix: udp4/tcp4/udp6/tcp6 plus the
+    // aggregate forms any/any4/any6/tcp/udp. "any" probes tcp6+tcp4+udp4 and
+    // the forward layer follows whichever transport the punch lands on
+    // (P2PConn dispatch), so the tunnel accepts the full matrix here.
+    if stun::networks_for_stun(network).is_err() {
         return Err(StartError::plain(format!("unsupported network for udp tunnel: {}", network)));
     }
     if req.allow_relay {
