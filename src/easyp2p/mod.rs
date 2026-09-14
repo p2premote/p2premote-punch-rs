@@ -9,6 +9,7 @@ pub mod netx;
 pub mod p2p;
 pub mod punch_tcp;
 pub mod punch_udp;
+pub mod socketprotect;
 pub mod stun;
 pub mod udp_tunnel;
 pub mod wake;

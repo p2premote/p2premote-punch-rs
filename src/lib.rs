@@ -10,7 +10,7 @@ mod handles;
 mod platform;
 mod runtime;
 mod subnet_router;
-mod types;
+pub mod types;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -656,6 +656,18 @@ pub extern "C" fn FreeCString(ptr: *mut c_char) {
 #[no_mangle]
 pub extern "C" fn Exchange(input: *const c_char) -> *mut c_char {
     ffi_guard(input, handle_exchange_json)
+}
+
+/// Android VpnService socket-protect injection (parity with the Go mobile
+/// binding's SetProtectCallback): registers a C callback that receives every
+/// punching socket's fd before bind/connect. Pass None to clear.
+#[cfg(feature = "ffi")]
+#[no_mangle]
+pub extern "C" fn SetProtectFunc(func: Option<extern "C" fn(fd: i32) -> bool>) {
+    match func {
+        Some(f) => easyp2p::socketprotect::set_socket_protect(Some(Box::new(move |fd| f(fd)))),
+        None => easyp2p::socketprotect::set_socket_protect(None),
+    }
 }
 
 // Keep a C-visible marker so accidental double-definition with the Go library
