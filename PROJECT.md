@@ -199,20 +199,19 @@ C ABI（§5.1，`ffi` feature，默认关闭）不在主程序源码集成路径
   依赖 pin：`base64ct=1.6.0`、`zeroize=1.7.0`。
 - 日志默认静默，`P2PREMOTE_PUNCH_LOG=1` 输出到 stderr。
 
-## 8. 开发工作流（worktree 隔离）
+## 8. 开发工作流
 
-本项目 master 工作区被 p2premote-desktop-client 以 path 依赖直接引用，**不得在上面直接
-开发**。所有复刻开发在独立 worktree 进行：
+**单一检出直接开发（2026-09-15 起）**：复刻阶段使用的隔离 worktree
+（`../p2premote-punch-rs-gonc`，分支 `dev/replicate-gonc`）已完成使命并移除，
+其提交已全部并入 master。客户端 path 依赖与构建脚本均已指向本检出
+（`../p2premote-punch-rs`）；直接在 master 上开发，提交前保持测试全绿。
 
 | 项 | 值 |
 |---|---|
-| 稳定线 | `D:\work\p2premote-all\p2premote-punch-rs`（master，保持可构建、可被客户端引用） |
-| 开发 worktree | `D:\work\p2premote-all\p2premote-punch-rs-gonc`（分支 `dev/replicate-gonc`） |
-| 合并策略 | 每个阶段完成并互通测试全过后，`dev/replicate-gonc` 合回 master |
+| 唯一检出 | `D:\work\p2premote-all\p2premote-punch-rs`（master） |
 | 远程 | 本仓库当前无 remote，纯本地 |
 
-worktree 相关注意：`dist/`、`target/` 均被 gitignore，worktree 内首次构建需重新编译；
-预构建 `.a` 只存在于 master 工作区 `dist/`。
+`dist/`、`target/` 均被 gitignore；预构建 musl `.a` 只存在于本检出 `dist/`。
 
 ## 9. 配套文档
 

@@ -41,7 +41,7 @@
 
 ### P0 工程基础（本次启动）
 
-- [x] 创建开发 worktree（`../p2premote-punch-rs-gonc`，分支 `dev/replicate-gonc`），master 保持稳定
+- [x] 创建开发 worktree（`../p2premote-punch-rs-gonc`，分支 `dev/replicate-gonc`）；2026-09-15 复刻收官后 worktree 移除、提交并入 master，转为单一检出直接开发
 - [x] 撰写 PROJECT.md / ROADMAP.md
 - [x] 调研 **Rust 打洞库**的 Win7 交付路径（2026-09-11）：
   `x86_64-win7-windows-msvc` / `i686-win7-windows-msvc` 在 rustc target 列表中
@@ -219,6 +219,7 @@ Rust 侧的 WG 相关 FFI（`GenerateWgKeypair` 等）维持现状（桩，由 G
 
 ## 7. 分支与交付节奏
 
-- 开发：`dev/replicate-gonc`（worktree `D:\work\p2premote-all\p2premote-punch-rs-gonc`）
-- 每阶段一个合并点：互通测试全过 → 合回 master → 更新 BUILD.md 与本文件勾选状态
-- master 随时保持可被 p2premote-desktop-client path 依赖引用
+- 开发：直接在 master（2026-09-15 起；此前经 `dev/replicate-gonc` worktree 分阶段合入，
+  该 worktree 已移除）
+- 提交前保持离线测试全绿；互通测试通过后更新 BUILD.md 与本文件勾选状态
+- master 即客户端 path 依赖目标（`../p2premote-punch-rs`）
