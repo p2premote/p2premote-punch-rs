@@ -14,7 +14,7 @@ pub const UDP_FORWARD_BUF: usize = 65535;
 pub fn listen_udp(bind: SocketAddr, reuse_addr: bool) -> io::Result<StdUdpSocket> {
     let domain = if bind.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
-    super::socketprotect::protect_socket(&socket);
+    super::socketprotect::protect_socket_bound(&socket, &bind);
     if reuse_addr {
         socket.set_reuse_address(true)?;
     }
@@ -81,7 +81,7 @@ pub fn tokio_udp(bind: SocketAddr, reuse_addr: bool) -> io::Result<tokio::net::U
 pub async fn connected_udp(local: SocketAddr, remote: SocketAddr) -> io::Result<tokio::net::UdpSocket> {
     let domain = if local.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
-    super::socketprotect::protect_socket(&socket);
+    super::socketprotect::protect_socket_bound(&socket, &local);
     socket.bind(&socket2::SockAddr::from(local))?;
     socket.set_nonblocking(true)?;
     let std_sock: StdUdpSocket = socket.into();

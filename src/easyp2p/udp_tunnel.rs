@@ -222,6 +222,13 @@ async fn establish_internet_udp_p2p(
 ) -> (Option<P2PConnInfo>, i32, Option<StartError>) {
     const RETRY_DELAY: Duration = Duration::from_secs(2);
     let mut attempt: i32 = 1;
+    // Furthest-stage failure across attempts. Once the address exchange has
+    // succeeded in ANY attempt, the real blocker is the P2P probing stage —
+    // later attempts usually fail back at the exchange because the peer has
+    // moved on to probing and stopped republishing, so the LAST error would
+    // misleadingly blame "exchange address info".
+    let mut exchange_ok_attempt: i32 = 0;
+    let mut probe_error: Option<P2pError> = None;
     loop {
         crate::p2plog!("=== UDP tunnel P2P attempt {} ===", attempt);
         match p2p::easy_p2p_mp_with_options(
@@ -236,14 +243,26 @@ async fn establish_internet_udp_p2p(
         {
             Ok(conn_info) => return (Some(conn_info), attempt, None),
             Err(err) => {
+                if err.message.contains("exchange address info") {
+                    // peer addresses already obtained earlier → probing stage.
+                } else {
+                    exchange_ok_attempt = attempt;
+                    probe_error = Some(err.clone());
+                }
                 if err.is_unretryable() {
                     return (None, attempt, Some(udp_tunnel_error(attempt, &err, &format!(
                         "failed to establish gonc p2p tunnel on attempt {}", attempt
                     ))));
                 }
                 if scope.expired() {
-                    return (None, attempt, Some(udp_tunnel_error(attempt, &err, &format!(
-                        "failed to establish gonc p2p tunnel after {} attempts", attempt
+                    let final_err = if exchange_ok_attempt > 0 {
+                        probe_error.clone().unwrap_or_else(|| err.clone())
+                    } else {
+                        err
+                    };
+                    return (None, attempt, Some(udp_tunnel_error(attempt, &final_err, &format!(
+                        "failed to establish gonc p2p tunnel after {} attempts (exchange ok in attempt {})",
+                        attempt, exchange_ok_attempt
                     ))));
                 }
                 crate::p2plog!(

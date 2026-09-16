@@ -253,6 +253,7 @@ impl MqttSignalSession {
                 }
                 Ok(Ok(event)) => match event {
                     Event::Incoming(Packet::ConnAck(_)) => {
+                        crate::p2plog!("[MQTT-DIAG] broker#{} ConnAck", index);
                         self.mark_connected(index, client.clone());
                         let _ = ready_tx.try_send(()); // wake the constructor (Go: ready <- struct{}{})
                         if !reported_failure {
@@ -262,11 +263,18 @@ impl MqttSignalSession {
                         // paho parity: OnConnect → resubscribe everything.
                         let desired = self.desired_subscriptions();
                         for (topic, qos) in desired {
-                            self.subscribe_client(index, &client, &topic, qos).await;
+                            let ok = self.subscribe_client(index, &client, &topic, qos).await;
+                            crate::p2plog!("[MQTT-DIAG] broker#{} resubscribe {} -> {}", index, topic, ok);
                         }
                     }
                     Event::Incoming(Packet::Publish(publish)) => {
                         let payload = String::from_utf8_lossy(&publish.payload).into_owned();
+                        crate::p2plog!(
+                            "[MQTT-DIAG] broker#{} incoming topic={} len={}",
+                            index,
+                            publish.topic,
+                            payload.len()
+                        );
                         self.dispatch_message(&publish.topic, index, payload);
                     }
                     _ => {}
@@ -381,11 +389,17 @@ impl MqttSignalSession {
             match state.waiters.get(topic) {
                 Some(map) if !map.is_empty() => map.values().cloned().collect(),
                 _ => {
+                    crate::p2plog!(
+                        "[MQTT-DIAG] dispatch: no waiter on {} (len={}) -> pending",
+                        topic,
+                        data.len()
+                    );
                     state.pending.insert(topic.to_string(), RecvPayload { data, index });
                     return;
                 }
             }
         };
+        crate::p2plog!("[MQTT-DIAG] dispatch: {} waiter(s) on {}", waiters.len(), topic);
         for waiter in waiters {
             self.deliver_message(&waiter, topic, index, &data);
         }
@@ -393,6 +407,7 @@ impl MqttSignalSession {
 
     fn deliver_message(&self, waiter: &Arc<Waiter>, topic: &str, index: usize, data: &str) {
         if data == waiter.self_payload {
+            crate::p2plog!("[MQTT-DIAG] deliver: dropped self echo on {}", topic);
             return;
         }
         if let Some(handler) = &waiter.handler {
@@ -482,7 +497,23 @@ impl MqttSignalSession {
     }
 
     async fn publish(&self, topic: &str, payload: &str, min_success: usize, settle_window: Duration) -> usize {
-        let clients = self.connected_clients();
+        // Only publish on brokers whose subscription for this topic is
+        // confirmed. The peer's waitOnly reply uses the broker our message
+        // arrived on (Go publish_preferred), and Go republishes for only
+        // ~5s after receiving — publishing through a broker we are not
+        // subscribed to would steer the reply somewhere we can never hear.
+        let subscribed: std::collections::HashSet<usize> = {
+            let state = self.state.lock().unwrap();
+            state.subscribed.get(topic).cloned().unwrap_or_default()
+        };
+        let clients: Vec<(usize, AsyncClient)> = if subscribed.is_empty() {
+            self.connected_clients()
+        } else {
+            self.connected_clients()
+                .into_iter()
+                .filter(|(index, _)| subscribed.contains(index))
+                .collect()
+        };
         self.publish_at_least_n(&clients, topic, payload, min_success, settle_window).await
     }
 

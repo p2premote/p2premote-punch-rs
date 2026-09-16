@@ -4,7 +4,16 @@
 //! for NAT punching must be passed to `VpnService.protect(fd)` or its
 //! traffic is routed back into the VPN's own TUN device. The mobile
 //! binding registers a callback here before starting any exchange.
+//!
+//! Loopback-bound sockets are exempt: the local forwarder binds 127.0.0.1
+//! to shuttle datagrams between WireGuard and the punched connection, and
+//! a protected loopback socket cannot receive packets from unprotected
+//! sockets (libwgmobile) — Android's VPN policy routing drops them, which
+//! silently kills the WireGuard handshake. The Go implementation never
+//! protects the forward socket either; it only protects public-facing
+//! punch/STUN/MQTT sockets at explicit call sites.
 
+use std::net::SocketAddr;
 use std::sync::Mutex;
 
 pub type ProtectFn = Box<dyn Fn(i32) -> bool + Send + Sync>;
@@ -36,3 +45,17 @@ pub fn protect_socket<S: std::os::fd::AsRawFd>(socket: &S) {
 
 #[cfg(not(unix))]
 pub fn protect_socket<S>(_socket: &S) {}
+
+/// Same as [`protect_socket`], but skips sockets that will be bound to a
+/// loopback address (see the module doc for why those must stay
+/// unprotected).
+#[cfg(unix)]
+pub fn protect_socket_bound<S: std::os::fd::AsRawFd>(socket: &S, bind: &SocketAddr) {
+    if bind.ip().is_loopback() {
+        return;
+    }
+    protect_socket(socket);
+}
+
+#[cfg(not(unix))]
+pub fn protect_socket_bound<S>(_socket: &S, _bind: &SocketAddr) {}

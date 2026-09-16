@@ -166,7 +166,7 @@ pub async fn auto_p2p_udp_nat_traversal(
         .ok_or_else(|| P2pError::msg(format!("failed to resolve remote address: {}", remote_addr)))?;
 
     // net.ListenUDP: plain bind, no socket options.
-    let std_socket = netx::listen_udp(local_addr, false)
+    let std_socket = netx::listen_udp(local_addr, true)
         .map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))?;
     std_socket.set_nonblocking(true).map_err(|e| P2pError::msg(e.to_string()))?;
     let socket = Arc::new(

@@ -279,13 +279,41 @@ static LOG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 pub fn log_enabled() -> bool {
     *LOG_ENABLED.get_or_init(|| {
-        std::env::var("P2PREMOTE_PUNCH_LOG").map(|v| v != "0").unwrap_or(false)
+        // Android: the app process cannot set env vars, and logcat is the
+        // only observable sink — default on. Desktop keeps the env gate.
+        if cfg!(target_os = "android") {
+            true
+        } else {
+            std::env::var("P2PREMOTE_PUNCH_LOG").map(|v| v != "0").unwrap_or(false)
+        }
     })
+}
+
+/// Emit one diagnostic line: stderr on desktop, logcat (tag P2P) on Android.
+pub fn p2p_diag_line(message: &str) {
+    #[cfg(target_os = "android")]
+    {
+        use std::ffi::CString;
+        use std::os::raw::{c_char, c_int};
+        extern "C" {
+            fn __android_log_print(prio: c_int, tag: *const c_char, msg: *const c_char) -> c_int;
+        }
+        let tag = b"P2P\0" as *const u8 as *const c_char;
+        if let Ok(text) = CString::new(format!("[P2P] {}", message)) {
+            unsafe {
+                __android_log_print(4 /* INFO */, tag, text.as_ptr());
+            }
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        eprintln!("[P2P] {}", message);
+    }
 }
 
 pub fn p2p_logf(message: &str) {
     if log_enabled() {
-        eprintln!("[P2P] {}", message);
+        p2p_diag_line(message);
     }
 }
 
@@ -293,7 +321,7 @@ pub fn p2p_logf(message: &str) {
 macro_rules! p2plog {
     ($($arg:tt)*) => {
         if $crate::easyp2p::log_enabled() {
-            eprintln!("[P2P] {}", format!($($arg)*));
+            $crate::easyp2p::p2p_diag_line(&format!($($arg)*));
         }
     };
 }

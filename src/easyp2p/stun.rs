@@ -86,7 +86,10 @@ pub struct UdpMux {
 
 impl UdpMux {
     pub fn bind(local: SocketAddr) -> std::io::Result<Arc<UdpMux>> {
-        let socket = netx::tokio_udp(local, false)?;
+        // SO_REUSEADDR: attempt loops rebind the same local port while a
+        // previous attempt's socket may still be draining; Linux/Android
+        // fail the bind with EADDRINUSE otherwise (Windows ignores it).
+        let socket = netx::tokio_udp(local, true)?;
         let mux = Arc::new(UdpMux {
             socket: Arc::new(socket),
             routes: Mutex::new(HashMap::new()),
