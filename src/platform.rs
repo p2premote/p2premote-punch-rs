@@ -72,10 +72,12 @@ pub fn get_userspace_wg_peer_status() -> WindowsWgPeerResult {
     unsupported_userspace_wg()
 }
 
+#[cfg(feature = "ffi")]
 pub fn stop_userspace_wg_engine() -> WindowsWgPeerResult {
     unsupported_userspace_wg()
 }
 
+#[cfg(feature = "ffi")]
 pub fn cleanup_userspace_wg_platform() -> WindowsWgPeerResult {
     unsupported_userspace_wg()
 }
