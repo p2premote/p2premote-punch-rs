@@ -212,6 +212,16 @@ pub async fn do_auto_p2p_ex2(
     )
     .await?;
 
+    crate::p2pevent!(
+        "address exchange complete: session={}, broker_index={}, local_addrs={:?}, remote_addrs={:?}, local_caps={:?}, remote_caps={:?}",
+        session_uid,
+        _srv_index,
+        my_payload.addresses,
+        remote_payload.addresses,
+        my_payload.caps,
+        remote_payload.caps
+    );
+
     if my_payload.addresses.is_empty() || remote_payload.addresses.is_empty() {
         return Err(P2pError::msg("no common usable network types with peer"));
     }
@@ -291,7 +301,17 @@ pub async fn do_auto_p2p_ex2(
         local_caps: my_payload.caps.clone(),
         remote_caps: remote_payload.caps.clone(),
     };
-    Ok((candidates::sort_p2p_address_infos(built.final_results), sess_ctx))
+    let sorted = candidates::sort_p2p_address_infos(built.final_results);
+    crate::p2pevent!(
+        "candidate selection: session={}, candidates={:?}, local_public_ipv4_count={}, remote_public_ipv4_count={}, local_public_ipv6_count={}, remote_public_ipv6_count={}",
+        session_uid,
+        sorted,
+        local_public_ipv4_count,
+        remote_public_ipv4_count,
+        local_public_ipv6_count,
+        remote_public_ipv6_count
+    );
+    Ok((sorted, sess_ctx))
 }
 
 /// Mqtt_P2P_Round_Sync: exchange "C<n>"/"S<n>" markers before each round.
@@ -404,6 +424,20 @@ pub async fn easy_p2p_mp_with_options(
         selected = Some(p2p_info);
         // FFI path: relay candidates never exist (allow_relay=false).
         round += 1;
+        crate::p2pevent!(
+            "candidate round start: session={}, round={}, network={}, local_lan={}, local_nat={}({}), remote_lan={}, remote_nat={}({}), lan_probe_only={}, remote_nat_alternatives={:?}",
+            session_uid,
+            round,
+            p2p_info.network,
+            p2p_info.local_lan,
+            p2p_info.local_nat,
+            p2p_info.local_nat_type,
+            p2p_info.remote_lan,
+            p2p_info.remote_nat,
+            p2p_info.remote_nat_type,
+            p2p_info.lan_probe_only,
+            p2p_info.remote_udp4_nat_alternatives
+        );
 
         let outcome = if p2p_info.network.starts_with("tcp") {
             punch_tcp::auto_p2p_tcp_nat_traversal(
@@ -451,6 +485,15 @@ pub async fn easy_p2p_mp_with_options(
                 return Ok(conn_info);
             }
             Err(err) => {
+                crate::p2pevent!(
+                    "candidate round failed: session={}, round={}, network={}, deadline_expired={}, remaining_ms={}, error={}",
+                    session_uid,
+                    round,
+                    p2p_info.network,
+                    scope.expired(),
+                    scope.remaining().as_millis(),
+                    err
+                );
                 if scope.expired() {
                     return Err(P2pError::msg("operation cancelled"));
                 }

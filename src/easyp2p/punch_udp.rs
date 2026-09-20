@@ -34,6 +34,9 @@ impl PunchedConn {
     pub async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.socket.recv(buf).await
     }
+    pub fn try_recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.socket.try_recv(buf)
+    }
     #[allow(dead_code)]
     pub fn local_addr(&self) -> SocketAddr {
         self.local
@@ -51,7 +54,7 @@ struct PunchCtx {
     /// Shared main socket; swapped by the EACCES rebuild path (best effort —
     /// the macOS firewall workaround degrades to force-rebind if the old
     /// socket is still referenced elsewhere).
-    socket: RwLock<Arc<UdpSocket>>,
+    socket: RwLock<Option<Arc<UdpSocket>>>,
     stop: StopFlag,
     picked: AtomicBool,
     last_remote: Mutex<Option<SocketAddr>>,
@@ -61,7 +64,16 @@ struct PunchCtx {
 
 impl PunchCtx {
     fn socket(&self) -> Arc<UdpSocket> {
-        self.socket.read().unwrap().clone()
+        self.socket
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("punch socket is open")
+            .clone()
+    }
+
+    fn close_socket(&self) -> Option<Arc<UdpSocket>> {
+        self.socket.write().unwrap().take()
     }
 }
 
@@ -119,11 +131,12 @@ pub async fn auto_p2p_udp_nat_traversal(
     } else {
         route_reason = "different network";
     }
-    let udp_lan_probe_addr = if !in_same_lan && candidates::should_try_lan_probe(in_same_lan, round, p2p_info) {
-        p2p_info.remote_lan.clone()
-    } else {
-        String::new()
-    };
+    let udp_lan_probe_addr =
+        if !in_same_lan && candidates::should_try_lan_probe(in_same_lan, round, p2p_info) {
+            p2p_info.remote_lan.clone()
+        } else {
+            String::new()
+        };
 
     let mut ttl: u32 = 64;
     let mut random_src_port = false;
@@ -160,22 +173,55 @@ pub async fn auto_p2p_udp_nat_traversal(
         8
     };
 
-    let local_addr: SocketAddr = netx::parse_addr(&p2p_info.local_lan)
-        .ok_or_else(|| P2pError::msg(format!("failed to resolve local address: {}", p2p_info.local_lan)))?;
-    let remote_udp_addr: SocketAddr = netx::parse_addr(&remote_addr)
-        .ok_or_else(|| P2pError::msg(format!("failed to resolve remote address: {}", remote_addr)))?;
+    crate::p2pevent!(
+        "udp probe plan: session={}, round={}, role={}, route={}, route_reason={}, local_lan={}, local_nat={}({}), remote_lan={}, remote_nat={}({}), random_src_port={}, random_dst_port={}, random_port_count={}, ttl={}, timeout_secs={}, lan_probe={}",
+        session_uid,
+        round,
+        if is_client { "client" } else { "server" },
+        remote_addr,
+        route_reason,
+        p2p_info.local_lan,
+        p2p_info.local_nat,
+        p2p_info.local_nat_type,
+        p2p_info.remote_lan,
+        p2p_info.remote_nat,
+        p2p_info.remote_nat_type,
+        random_src_port,
+        random_dst_port,
+        super::punching_random_port_count(),
+        ttl,
+        count,
+        if udp_lan_probe_addr.is_empty() { "none" } else { udp_lan_probe_addr.as_str() }
+    );
+
+    let local_addr: SocketAddr = netx::parse_addr(&p2p_info.local_lan).ok_or_else(|| {
+        P2pError::msg(format!(
+            "failed to resolve local address: {}",
+            p2p_info.local_lan
+        ))
+    })?;
+    let remote_udp_addr: SocketAddr = netx::parse_addr(&remote_addr).ok_or_else(|| {
+        P2pError::msg(format!("failed to resolve remote address: {}", remote_addr))
+    })?;
 
     // net.ListenUDP: plain bind, no socket options.
-    let std_socket = netx::listen_udp(local_addr, true)
+    // Go parity: net.ListenUDP performs an exclusive plain bind here. In
+    // particular, do not enable SO_REUSEADDR on Windows; sharing this exact
+    // STUN-discovered port can make inbound punch packets land on a different
+    // socket and also changes the later close-and-rebind semantics.
+    let std_socket = netx::listen_udp(local_addr, false)
         .map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))?;
-    std_socket.set_nonblocking(true).map_err(|e| P2pError::msg(e.to_string()))?;
+    std_socket
+        .set_nonblocking(true)
+        .map_err(|e| P2pError::msg(e.to_string()))?;
     let socket = Arc::new(
-        UdpSocket::from_std(std_socket).map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))?,
+        UdpSocket::from_std(std_socket)
+            .map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))?,
     );
     let _ = netx::set_udp_ttl(&socket, ttl);
 
     let ctx = Arc::new(PunchCtx {
-        socket: RwLock::new(socket),
+        socket: RwLock::new(Some(socket)),
         stop: StopFlag::new(),
         picked: AtomicBool::new(false),
         last_remote: Mutex::new(None),
@@ -188,20 +234,44 @@ pub async fn auto_p2p_udp_nat_traversal(
             .signal
             .as_ref()
             .ok_or_else(|| P2pError::msg("missing MQTT signal session"))?;
-        p2p::mqtt_p2p_round_sync(scope, session_uid, signal, is_client, round, Duration::from_secs(25))
-            .await
-            .map_err(|e| P2pError::msg(format!("failed to sync P2P round: {}", e)).wrap_unretryable())?;
+        p2p::mqtt_p2p_round_sync(
+            scope,
+            session_uid,
+            signal,
+            is_client,
+            round,
+            Duration::from_secs(25),
+        )
+        .await
+        .map_err(|e| {
+            P2pError::msg(format!("failed to sync P2P round: {}", e)).wrap_unretryable()
+        })?;
     }
 
     print_p2p_info(p2p_info);
-    crate::p2plog!("  - {:<14}: {} (reason: {})", "Best Route", remote_addr, route_reason);
+    crate::p2plog!(
+        "  - {:<14}: {} (reason: {})",
+        "Best Route",
+        remote_addr,
+        route_reason
+    );
     if is_client {
-        crate::p2plog!("  - {:<14}: sending PING every 1s (start immediately)", "Client Mode");
+        crate::p2plog!(
+            "  - {:<14}: sending PING every 1s (start immediately)",
+            "Client Mode"
+        );
     } else {
-        crate::p2plog!("  - {:<14}: sending PING every 1s (start after 2s)", "Server Mode");
+        crate::p2plog!(
+            "  - {:<14}: sending PING every 1s (start after 2s)",
+            "Server Mode"
+        );
     }
     if !udp_lan_probe_addr.is_empty() {
-        crate::p2plog!("  - {:<14}: enabled (target: {})", "LAN Probe", udp_lan_probe_addr);
+        crate::p2plog!(
+            "  - {:<14}: enabled (target: {})",
+            "LAN Probe",
+            udp_lan_probe_addr
+        );
     }
     crate::p2plog!("  - {:<14}: {}s", "Timeout", count);
 
@@ -285,7 +355,17 @@ pub async fn auto_p2p_udp_nat_traversal(
                     return;
                 }
                 if i < 3 {
-                    if !send_ping(&ctx, &info, &payload, remote_udp_addr, &udp_lan_probe_addr, i as usize, &err_tx).await {
+                    if !send_ping(
+                        &ctx,
+                        &info,
+                        &payload,
+                        remote_udp_addr,
+                        &udp_lan_probe_addr,
+                        i as usize,
+                        &err_tx,
+                    )
+                    .await
+                    {
                         return;
                     }
                 } else {
@@ -315,9 +395,21 @@ pub async fn auto_p2p_udp_nat_traversal(
                         // give the batch time to draw replies
                         tokio::select! {
                             _ = ctx.stop.wait() => return,
-                            _ = round_scope.sleep_until_deadline(Duration::from_millis(RPP_TIMEOUT_SECS * 500)) => {}
+                            // Go uses time.Duration(RPP_TIMEOUT/2)*time.Second;
+                            // RPP_TIMEOUT is an integer, so 7/2 is exactly 3s.
+                            _ = round_scope.sleep_until_deadline(Duration::from_secs(RPP_TIMEOUT_SECS / 2)) => {}
                         }
-                    } else if !send_ping(&ctx, &info, &payload, remote_udp_addr, &udp_lan_probe_addr, i as usize, &err_tx).await {
+                    } else if !send_ping(
+                        &ctx,
+                        &info,
+                        &payload,
+                        remote_udp_addr,
+                        &udp_lan_probe_addr,
+                        i as usize,
+                        &err_tx,
+                    )
+                    .await
+                    {
                         return;
                     }
                 }
@@ -375,35 +467,68 @@ pub async fn auto_p2p_udp_nat_traversal(
 
     let final_result: Result<PunchedConn> = match outcome {
         Outcome::Hole(claim) => {
+            crate::p2pevent!(
+                "udp probe outcome: session={}, round={}, outcome=random-source-port-hole, local={}, remote={}, deadline_expired={}",
+                session_uid, round, claim.local, claim.remote, scope.expired()
+            );
             if scope.expired() {
                 Err(P2pError::msg("operation cancelled"))
             } else {
                 crate::p2plog!("P2P(UDP) connection established (RSP)!");
-                finalize_conn(claim.socket, claim.local, claim.remote, false, &punch_payload)
+                finalize_rsp_conn(claim.local, claim.remote, &punch_payload)
                     .await
                     .map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))
             }
         }
         Outcome::Recv => {
+            crate::p2pevent!(
+                "udp probe outcome: session={}, round={}, outcome=main-socket-recv, remote={:?}, deadline_expired={}",
+                session_uid,
+                round,
+                *ctx.last_remote.lock().unwrap(),
+                scope.expired()
+            );
             if scope.expired() {
                 Err(P2pError::msg("operation cancelled"))
             } else {
                 crate::p2plog!("P2P(UDP) connection established!");
                 let raddr = ctx.last_remote.lock().unwrap().unwrap_or(remote_udp_addr);
                 let force_rebind = ctx.force_rebind.load(Ordering::SeqCst);
-                let socket = ctx.socket();
+                let socket = ctx.close_socket().expect("punch socket is open");
                 let laddr = socket.local_addr().unwrap_or(local_addr);
-                finalize_conn(socket, laddr, raddr, force_rebind, &punch_payload)
+                drop(socket);
+                finalize_main_conn(laddr, raddr, force_rebind, &punch_payload)
                     .await
                     .map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))
             }
         }
-        Outcome::Err(err) => Err(P2pError::msg(format!("P2P UDP hole punching failed: {}", err))),
+        Outcome::Err(err) => {
+            crate::p2pevent!(
+                "udp probe outcome: session={}, round={}, outcome=socket-error, deadline_expired={}, error={}",
+                session_uid, round, scope.expired(), err
+            );
+            Err(P2pError::msg(format!(
+                "P2P UDP hole punching failed: {}",
+                err
+            )))
+        }
         Outcome::Timeout => {
+            crate::p2pevent!(
+                "udp probe outcome: session={}, round={}, outcome=timeout, role={}, route={}, deadline_expired={}, remaining_ms={}",
+                session_uid,
+                round,
+                if is_client { "client" } else { "server" },
+                remote_addr,
+                scope.expired(),
+                scope.remaining().as_millis()
+            );
             if scope.expired() {
                 Err(P2pError::msg("operation cancelled"))
             } else {
-                Err(P2pError::msg(format!("P2P UDP hole punching failed: timeout ({}s)", count)))
+                Err(P2pError::msg(format!(
+                    "P2P UDP hole punching failed: timeout ({}s)",
+                    count
+                )))
             }
         }
     };
@@ -415,26 +540,39 @@ pub async fn auto_p2p_udp_nat_traversal(
 }
 
 struct HoleClaim {
-    socket: Arc<UdpSocket>,
     local: SocketAddr,
     remote: SocketAddr,
 }
 
-/// Reuse the surviving socket: connect it to the peer (or rebind wildcard for
-/// the forceRebind path) and fire the payload once to open the local firewall.
-async fn finalize_conn(
-    socket: Arc<UdpSocket>,
+/// Go closes buconn and creates a fresh connected socket on the selected local
+/// port. The forceRebind path binds the wildcard address for that same port.
+async fn finalize_main_conn(
     local: SocketAddr,
     remote: SocketAddr,
     force_rebind: bool,
     punch_payload: &[u8],
 ) -> std::io::Result<PunchedConn> {
-    let connected = if force_rebind {
-        Arc::new(netx::connected_udp_wildcard(local, remote).await?)
+    let connected = Arc::new(if force_rebind {
+        netx::connected_udp_wildcard(local, remote).await?
     } else {
-        socket.connect(remote).await?;
-        socket
-    };
+        netx::connected_udp(local, remote).await?
+    });
+    let _ = connected.send(punch_payload).await;
+    Ok(PunchedConn {
+        socket: connected,
+        local,
+        remote,
+    })
+}
+
+/// Go closes the temporary RSP socket before publishing gotHoleCh, then
+/// CreateUDPConnFromAddr binds a fresh connected socket to the same port.
+async fn finalize_rsp_conn(
+    local: SocketAddr,
+    remote: SocketAddr,
+    punch_payload: &[u8],
+) -> std::io::Result<PunchedConn> {
+    let connected = Arc::new(netx::connected_udp(local, remote).await?);
     let _ = connected.send(punch_payload).await;
     Ok(PunchedConn {
         socket: connected,
@@ -445,19 +583,35 @@ async fn finalize_conn(
 
 pub(crate) fn print_p2p_info(info: &P2PAddressInfo) {
     if info.local_lan == info.local_nat {
-        crate::p2plog!("  - {:<14}: {} (NAT-{})", "Local Address", info.local_lan, info.local_nat_type);
+        crate::p2plog!(
+            "  - {:<14}: {} (NAT-{})",
+            "Local Address",
+            info.local_lan,
+            info.local_nat_type
+        );
     } else {
         crate::p2plog!(
             "  - {:<14}: {} (LAN) / {} (NAT-{})",
-            "Local Address", info.local_lan, info.local_nat, info.local_nat_type
+            "Local Address",
+            info.local_lan,
+            info.local_nat,
+            info.local_nat_type
         );
     }
     if info.remote_lan == info.remote_nat {
-        crate::p2plog!("  - {:<14}: {} (NAT-{})", "Remote Address", info.remote_lan, info.remote_nat_type);
+        crate::p2plog!(
+            "  - {:<14}: {} (NAT-{})",
+            "Remote Address",
+            info.remote_lan,
+            info.remote_nat_type
+        );
     } else {
         crate::p2plog!(
             "  - {:<14}: {} (LAN) / {} (NAT-{})",
-            "Remote Address", info.remote_lan, info.remote_nat, info.remote_nat_type
+            "Remote Address",
+            info.remote_lan,
+            info.remote_nat,
+            info.remote_nat_type
         );
     }
 }
@@ -486,7 +640,7 @@ async fn send_ping(
                 match rebuilt {
                     Some(rebuilt) => {
                         let rebuilt = Arc::new(rebuilt);
-                        *ctx.socket.write().unwrap() = rebuilt.clone();
+                        *ctx.socket.write().unwrap() = Some(rebuilt.clone());
                         if rebuilt.send_to(payload, remote_udp_addr).await.is_ok() {
                             rebuilt
                         } else {
@@ -526,7 +680,12 @@ async fn send_ping(
     if !udp_lan_probe_addr.is_empty() {
         addr_count += 1;
     }
-    crate::p2plog!("  ↑ Sent PING(TTL={}) to {} IP ({})", ttl, addr_count, iteration + 1);
+    crate::p2plog!(
+        "  ↑ Sent PING(TTL={}) to {} IP ({})",
+        ttl,
+        addr_count,
+        iteration + 1
+    );
     true
 }
 
@@ -561,13 +720,30 @@ async fn send_rdp_ping(
         ttl,
         random_port_count * remote_nat_ips.len()
     );
+    let send_started = std::time::Instant::now();
+    let mut sent_ok = 0usize;
+    let mut sent_failed = 0usize;
     for ip in &remote_nat_ips {
-        let Ok(ip_addr) = ip.parse::<std::net::IpAddr>() else { continue };
+        let Ok(ip_addr) = ip.parse::<std::net::IpAddr>() else {
+            continue;
+        };
         for port in &ports {
             let addr = SocketAddr::new(ip_addr, *port);
-            let _ = socket.send_to(payload, addr).await;
+            match socket.send_to(payload, addr).await {
+                Ok(_) => sent_ok += 1,
+                Err(_) => sent_failed += 1,
+            }
         }
     }
+    crate::p2pevent!(
+        "random-destination batch sent: requested={}, sent_ok={}, sent_failed={}, destinations={}, ttl={}, send_ms={}",
+        random_port_count * remote_nat_ips.len(),
+        sent_ok,
+        sent_failed,
+        remote_nat_ips.len(),
+        ttl,
+        send_started.elapsed().as_millis()
+    );
     let _ = remote_udp_addr;
 }
 
@@ -600,31 +776,74 @@ async fn send_rsp_ping(
     let ttl = ctx.ttl.load(Ordering::SeqCst);
     let rand_ports = p2p::generate_random_ports(random_port_count + 50);
 
-    let mut conns: Vec<Arc<UdpSocket>> = Vec::with_capacity(random_port_count);
     let bind_ip = local_addr.ip();
-    for port in &rand_ports {
-        if conns.len() >= random_port_count {
-            break;
+    let bind_started = std::time::Instant::now();
+    let std_conns = bind_rsp_sockets(bind_ip, rand_ports, random_port_count).await;
+    let mut conns: Vec<Arc<UdpSocket>> = Vec::with_capacity(std_conns.len());
+    for std_sock in std_conns {
+        if std_sock.set_nonblocking(true).is_err() {
+            continue;
         }
-        let sa = SocketAddr::new(bind_ip, *port);
-        if let Ok(sock) = netx::tokio_udp(sa, false) {
+        if let Ok(sock) = UdpSocket::from_std(std_sock) {
             let _ = netx::set_udp_ttl(&sock, ttl);
             conns.push(Arc::new(sock));
         }
     }
+    let bind_elapsed = bind_started.elapsed();
 
-    for conn in &conns {
+    let bound_count = conns.len();
+    let mut active_conns = Vec::with_capacity(bound_count);
+    let mut send_failures = 0usize;
+    let send_started = std::time::Instant::now();
+    for conn in conns {
+        let mut sent = false;
         for ra in &all_remote_addrs {
-            let _ = conn.send_to(payload, *ra).await;
+            if conn.send_to(payload, *ra).await.is_ok() {
+                sent = true;
+            } else {
+                send_failures += 1;
+            }
+        }
+        // Go closes and excludes a socket when every initial WriteToUDP fails.
+        if sent {
+            active_conns.push(conn);
         }
     }
+    let send_elapsed = send_started.elapsed();
+
+    crate::p2pevent!(
+        "random-source batch ready: requested={}, bound={}, active={}, destinations={}, send_failures={}, ttl={}, bind_ms={}, send_ms={}, listen_budget_ms={}",
+        random_port_count,
+        bound_count,
+        active_conns.len(),
+        all_remote_addrs.len(),
+        send_failures,
+        ttl,
+        bind_elapsed.as_millis(),
+        send_elapsed.as_millis(),
+        rsp_scope.remaining().as_millis()
+    );
 
     let (winner_tx, mut winner_rx) = mpsc::channel::<HoleClaim>(1);
-    for conn in conns.iter().cloned() {
+    // Keep one sender alive until the RSP timeout. Go's gotCh is never closed;
+    // reader goroutines finishing after their 5s deadlines must not make the
+    // 7s RSP phase return early.
+    let keep_winner_tx_open = winner_tx.clone();
+    let received_packets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let matching_packets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let receive_errors = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let spawn_started = std::time::Instant::now();
+    // Move each socket into exactly one reader task. This lets the winner close
+    // its socket before publishing the address pair, exactly like Go's
+    // c.Close() immediately before gotHoleCh <- AddrPair.
+    for conn in active_conns {
         let ctx = ctx.clone();
         let payload = payload.to_vec();
         let winner_tx = winner_tx.clone();
         let round_scope = round_scope.clone();
+        let received_packets = received_packets.clone();
+        let matching_packets = matching_packets.clone();
+        let receive_errors = receive_errors.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 32];
             let deadline = tokio::time::sleep(Duration::from_secs(5));
@@ -634,8 +853,13 @@ async fn send_rsp_ping(
                     _ = &mut deadline => return,
                     _ = ctx.stop.wait() => return,
                     received = conn.recv_from(&mut buf) => {
-                        let Ok((n, raddr)) = received else { return };
+                        let Ok((n, raddr)) = received else {
+                            receive_errors.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        };
+                        received_packets.fetch_add(1, Ordering::Relaxed);
                         if buf[..n] != payload[..] { continue; }
+                        matching_packets.fetch_add(1, Ordering::Relaxed);
                         if !ctx.picked.swap(true, Ordering::SeqCst) {
                             let _ = netx::set_udp_ttl(&conn, 64);
                             let _ = conn.send_to(&payload, raddr).await;
@@ -644,8 +868,8 @@ async fn send_rsp_ping(
                                 let _ = conn.send_to(&payload, raddr).await;
                             }
                             let local = conn.local_addr().unwrap_or(raddr);
+                            drop(conn);
                             let _ = winner_tx.try_send(HoleClaim {
-                                socket: conn.clone(),
                                 local,
                                 remote: raddr,
                             });
@@ -657,6 +881,7 @@ async fn send_rsp_ping(
         });
     }
     drop(winner_tx);
+    let spawn_elapsed = spawn_started.elapsed();
 
     let mut won = false;
     tokio::select! {
@@ -671,5 +896,127 @@ async fn send_rsp_ping(
         _ = rsp_scope.sleep_until_deadline(rsp_scope.remaining()) => {}
         _ = tokio::time::sleep(timeout + Duration::from_millis(500)) => {}
     }
+    drop(keep_winner_tx_open);
+    crate::p2pevent!(
+        "random-source batch finished: won={}, received_packets={}, matching_packets={}, receive_errors={}, spawn_ms={}, elapsed_ms={}",
+        won,
+        received_packets.load(Ordering::Relaxed),
+        matching_packets.load(Ordering::Relaxed),
+        receive_errors.load(Ordering::Relaxed),
+        spawn_elapsed.as_millis(),
+        bind_started.elapsed().as_millis()
+    );
     won
+}
+
+/// Bind the birthday-probe sockets without blocking Tokio's network workers.
+/// Go's runtime moves blocking socket syscalls away from runnable goroutines;
+/// on Windows we use a small number of blocking batches to provide the same
+/// scheduling property while preserving the generated port set and bind rules.
+async fn bind_rsp_sockets(
+    bind_ip: std::net::IpAddr,
+    ports: Vec<u16>,
+    wanted: usize,
+) -> Vec<std::net::UdpSocket> {
+    #[cfg(windows)]
+    {
+        const BIND_WORKERS: usize = 8;
+        let chunk_size = (ports.len() + BIND_WORKERS - 1) / BIND_WORKERS;
+        let mut jobs = Vec::new();
+        for (chunk_index, chunk) in ports.chunks(chunk_size.max(1)).enumerate() {
+            let chunk = chunk.to_vec();
+            jobs.push(tokio::task::spawn_blocking(move || {
+                let mut sockets = Vec::with_capacity(chunk.len());
+                for (offset, port) in chunk.into_iter().enumerate() {
+                    let addr = SocketAddr::new(bind_ip, port);
+                    if let Ok(socket) = netx::listen_udp(addr, false) {
+                        sockets.push((chunk_index * chunk_size + offset, socket));
+                    }
+                }
+                sockets
+            }));
+        }
+        let mut indexed = Vec::with_capacity(ports.len());
+        for job in jobs {
+            if let Ok(mut sockets) = job.await {
+                indexed.append(&mut sockets);
+            }
+        }
+        indexed.sort_unstable_by_key(|(index, _)| *index);
+        indexed.truncate(wanted);
+        return indexed.into_iter().map(|(_, socket)| socket).collect();
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut sockets = Vec::with_capacity(wanted);
+        for port in ports {
+            if sockets.len() >= wanted {
+                break;
+            }
+            if let Ok(socket) = netx::listen_udp(SocketAddr::new(bind_ip, port), false) {
+                sockets.push(socket);
+            }
+        }
+        sockets
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn random_source_probe_echoes_and_rebinds_winning_port() {
+        let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer_addr = peer.local_addr().unwrap();
+        let payload = b"rsp-test".to_vec();
+        let echo_payload = payload.clone();
+        let echo = tokio::spawn(async move {
+            let mut buf = [0u8; 32];
+            loop {
+                let Ok((n, remote)) = peer.recv_from(&mut buf).await else {
+                    // Windows may report an ICMP reset when one of the 600
+                    // short-lived probe sockets closes after its first send.
+                    continue;
+                };
+                if buf[..n] == echo_payload {
+                    let _ = peer.send_to(&buf[..n], remote).await;
+                }
+            }
+        });
+
+        let ctx = Arc::new(PunchCtx {
+            socket: RwLock::new(Some(Arc::new(
+                UdpSocket::bind("127.0.0.1:0").await.unwrap(),
+            ))),
+            stop: StopFlag::new(),
+            picked: AtomicBool::new(false),
+            last_remote: Mutex::new(None),
+            force_rebind: AtomicBool::new(false),
+            ttl: AtomicU32::new(64),
+        });
+        let scope = Scope::from_timeout(Duration::from_secs(10));
+        let (hole_tx, mut hole_rx) = mpsc::channel(1);
+        let won = send_rsp_ping(
+            ctx,
+            &scope,
+            &payload,
+            "127.0.0.1:0".parse().unwrap(),
+            peer_addr,
+            &P2PAddressInfo::default(),
+            Duration::from_secs(7),
+            &hole_tx,
+        )
+        .await;
+        assert!(won, "local echo must be found by the RSP receive set");
+
+        let claim = hole_rx.recv().await.expect("winning address pair");
+        let rebound = finalize_rsp_conn(claim.local, claim.remote, &payload)
+            .await
+            .expect("Go-style close and rebind of winning source port");
+        assert_eq!(rebound.local_addr(), claim.local);
+        assert_eq!(rebound.remote_addr(), peer_addr);
+        echo.abort();
+    }
 }

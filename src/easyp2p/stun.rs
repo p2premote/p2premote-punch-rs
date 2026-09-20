@@ -81,7 +81,8 @@ pub struct AnalyzedStunResult {
 
 pub struct UdpMux {
     pub(crate) socket: Arc<tokio::net::UdpSocket>,
-    routes: Mutex<HashMap<SocketAddr, Vec<mpsc::Sender<Vec<u8>>>>>,
+    routes: Arc<Mutex<HashMap<SocketAddr, Vec<mpsc::Sender<Vec<u8>>>>>>,
+    reader_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl UdpMux {
@@ -90,18 +91,24 @@ impl UdpMux {
         // previous attempt's socket may still be draining; Linux/Android
         // fail the bind with EADDRINUSE otherwise (Windows ignores it).
         let socket = netx::tokio_udp(local, true)?;
-        let mux = Arc::new(UdpMux {
-            socket: Arc::new(socket),
-            routes: Mutex::new(HashMap::new()),
-        });
-        let reader = mux.clone();
-        tokio::spawn(async move {
+        let socket = Arc::new(socket);
+        let routes = Arc::new(Mutex::new(HashMap::<
+            SocketAddr,
+            Vec<mpsc::Sender<Vec<u8>>>,
+        >::new()));
+        // Do not move Arc<UdpMux> into this task. Doing so keeps the STUN
+        // socket alive forever, whereas gonc closes its UDPSessionDialer and
+        // underlying socket before the puncher re-binds the STUN-discovered
+        // local port. A leaked reader can steal every inbound punch packet on
+        // Windows when both sockets are allowed to bind the same port.
+        let reader_socket = socket.clone();
+        let reader_routes = routes.clone();
+        let reader_task = tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
             loop {
-                match reader.socket.recv_from(&mut buf).await {
+                match reader_socket.recv_from(&mut buf).await {
                     Ok((n, remote)) => {
-                        let senders: Vec<mpsc::Sender<Vec<u8>>> = reader
-                            .routes
+                        let senders: Vec<mpsc::Sender<Vec<u8>>> = reader_routes
                             .lock()
                             .unwrap()
                             .get(&remote)
@@ -115,7 +122,11 @@ impl UdpMux {
                 }
             }
         });
-        Ok(mux)
+        Ok(Arc::new(UdpMux {
+            socket,
+            routes,
+            reader_task: Mutex::new(Some(reader_task)),
+        }))
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -134,11 +145,19 @@ impl UdpMux {
             mux_local.ip()
         };
         Ok(VirtualUdpConn {
-            mux: self.clone(),
+            socket: self.socket.clone(),
             remote,
             rx,
             local_addr: SocketAddr::new(local_ip, mux_local.port()),
         })
+    }
+}
+
+impl Drop for UdpMux {
+    fn drop(&mut self) {
+        if let Some(task) = self.reader_task.lock().unwrap().take() {
+            task.abort();
+        }
     }
 }
 
@@ -158,7 +177,7 @@ fn dummy_local_ip(remote: SocketAddr) -> Option<IpAddr> {
 
 #[allow(dead_code)]
 pub struct VirtualUdpConn {
-    mux: Arc<UdpMux>,
+    socket: Arc<tokio::net::UdpSocket>,
     remote: SocketAddr,
     rx: mpsc::Receiver<Vec<u8>>,
     local_addr: SocketAddr,
@@ -166,7 +185,7 @@ pub struct VirtualUdpConn {
 
 impl VirtualUdpConn {
     pub async fn send(&self, data: &[u8]) -> std::io::Result<usize> {
-        self.mux.socket.send_to(data, self.remote).await
+        self.socket.send_to(data, self.remote).await
     }
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
         self.rx.recv().await
@@ -186,7 +205,7 @@ enum ConnKind {
     Tcp(tokio::net::TcpStream),
     Udp(VirtualUdpConn),
     UdpRace {
-        mux: Arc<UdpMux>,
+        socket: Arc<tokio::net::UdpSocket>,
         remotes: Vec<SocketAddr>,
         rx: mpsc::Receiver<(usize, Vec<u8>)>,
         winner: Arc<AtomicUsize>,
@@ -213,13 +232,13 @@ impl StunConn {
                 conn.send(data).await?;
                 Ok(())
             }
-            ConnKind::UdpRace { mux, remotes, winner, .. } => {
+            ConnKind::UdpRace { socket, remotes, winner, .. } => {
                 let w = winner.load(Ordering::SeqCst);
                 if w != NO_WINNER {
-                    mux.socket.send_to(data, remotes[w]).await?;
+                    socket.send_to(data, remotes[w]).await?;
                 } else {
                     for remote in remotes {
-                        let _ = mux.socket.send_to(data, *remote).await;
+                        let _ = socket.send_to(data, *remote).await;
                     }
                 }
                 Ok(())
@@ -517,7 +536,7 @@ async fn dial_stun_conn(
                 local_addr: local,
                 remote_addr: remotes[0],
                 kind: ConnKind::UdpRace {
-                    mux: mux.clone(),
+                    socket: mux.socket.clone(),
                     remotes,
                     rx,
                     winner,
@@ -838,6 +857,18 @@ pub fn analyze_stun_results(results: &[StunResult]) -> Vec<AnalyzedStunResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn udp_mux_reader_does_not_keep_mux_alive() {
+        let mux = UdpMux::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let weak = Arc::downgrade(&mux);
+        drop(mux);
+        tokio::task::yield_now().await;
+        assert!(
+            weak.upgrade().is_none(),
+            "STUN reader must not retain the mux and its bound socket"
+        );
+    }
 
     #[test]
     fn binding_request_layout() {

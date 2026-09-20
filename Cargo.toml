@@ -13,6 +13,11 @@ crate-type = ["staticlib", "rlib"]
 default = ["ffi"]
 ffi = []
 
+# The interop driver exercises the exported C ABI, which only exists with ffi.
+[[example]]
+name = "interop"
+required-features = ["ffi"]
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util"] }
 socket2 = "0.6"
@@ -29,6 +34,7 @@ rand = "0.8"
 libc = "0.2"
 if-addrs = "0.13"
 futures = "0.3"
+tracing = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Networking_WinSock", "Win32_Foundation"] }

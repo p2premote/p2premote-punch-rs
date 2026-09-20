@@ -14,7 +14,9 @@ pub mod stun;
 pub mod udp_tunnel;
 pub mod wake;
 
-#[cfg(test)]
+// live_tests drive the exported C ABI (StartUdpTunnel/FreeCString), which only
+// exists with the ffi feature.
+#[cfg(all(test, feature = "ffi"))]
 mod live_tests;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -272,20 +274,19 @@ impl Scope {
 
 // ============ logging ============
 //
-// The Go FFI captures easyp2p logs into a buffer it discards. We keep the
-// messages but only print them when P2PREMOTE_PUNCH_LOG=1 for debugging.
+// The Go FFI captures easyp2p logs into a buffer it discards. Keep the Rust
+// diagnostics disabled by default on every platform: the UDP forwarding path
+// contains per-packet diagnostics, and writing those to Android logcat can
+// severely limit tunnel throughput. Desktop builds can still opt in with
+// P2PREMOTE_PUNCH_LOG=1.
 
 static LOG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 pub fn log_enabled() -> bool {
     *LOG_ENABLED.get_or_init(|| {
-        // Android: the app process cannot set env vars, and logcat is the
-        // only observable sink — default on. Desktop keeps the env gate.
-        if cfg!(target_os = "android") {
-            true
-        } else {
-            std::env::var("P2PREMOTE_PUNCH_LOG").map(|v| v != "0").unwrap_or(false)
-        }
+        std::env::var("P2PREMOTE_PUNCH_LOG")
+            .map(|v| v != "0")
+            .unwrap_or(false)
     })
 }
 
@@ -315,6 +316,20 @@ pub fn p2p_logf(message: &str) {
     if log_enabled() {
         p2p_diag_line(message);
     }
+}
+
+/// Always-on, low-volume traversal diagnostics. Unlike `p2plog!`, these
+/// records are intentionally routed through the host application's tracing
+/// subscriber so service builds persist them in p2premote-service.log.
+pub fn p2p_event_line(message: &str) {
+    tracing::info!(target: "p2premote_punch::diagnostics", "[P2P-DIAG] {}", message);
+}
+
+#[macro_export]
+macro_rules! p2pevent {
+    ($($arg:tt)*) => {
+        $crate::easyp2p::p2p_event_line(&format!($($arg)*));
+    };
 }
 
 #[macro_export]

@@ -1,4 +1,5 @@
 //! Mirrors punchffi/main_test.go against the exported C ABI.
+#![cfg(feature = "ffi")]
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;

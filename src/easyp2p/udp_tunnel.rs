@@ -9,6 +9,17 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 
+// Drain a bounded number of already-ready datagrams after each async wake-up.
+// This preserves UDP packet boundaries while amortizing Tokio scheduling and
+// task wake-up overhead under sustained LAN throughput.
+const UDP_FORWARD_BATCH_SIZE: usize = 32;
+
+fn udp_forward_batch_buffers() -> Vec<Vec<u8>> {
+    (0..UDP_FORWARD_BATCH_SIZE)
+        .map(|_| vec![0u8; netx::UDP_FORWARD_BUF])
+        .collect()
+}
+
 use super::crypto;
 use super::lan;
 use super::mqtt_signal::{self, MqttSignalSession};
@@ -243,6 +254,14 @@ async fn establish_internet_udp_p2p(
         {
             Ok(conn_info) => return (Some(conn_info), attempt, None),
             Err(err) => {
+                crate::p2pevent!(
+                    "udp tunnel attempt failed: attempt={}, exchange_succeeded={}, deadline_expired={}, remaining_ms={}, error={}",
+                    attempt,
+                    !err.message.contains("exchange address info"),
+                    scope.expired(),
+                    scope.remaining().as_millis(),
+                    err
+                );
                 if err.message.contains("exchange address info") {
                     // peer addresses already obtained earlier → probing stage.
                 } else {
@@ -507,20 +526,41 @@ fn spawn_forwarders(
                 let p2p = p2p.clone();
                 let token = token.clone();
                 tokio::spawn(async move {
-                    let mut buf = vec![0u8; netx::UDP_FORWARD_BUF];
+                    let mut buffers = udp_forward_batch_buffers();
+                    let mut packets = Vec::with_capacity(UDP_FORWARD_BATCH_SIZE);
                     loop {
                         tokio::select! {
                             _ = token.cancelled() => break,
-                            received = local.recv_from(&mut buf) => {
+                            received = local.recv_from(&mut buffers[0]) => {
                                 match received {
                                     Ok((n, src)) => {
-                                        if src != target_addr {
-                                            crate::p2plog!("fwd local→p2p dropped {} bytes from {} (target {})", n, src, target_addr);
-                                            continue;
+                                        packets.clear();
+                                        packets.push((n, src));
+                                        while packets.len() < UDP_FORWARD_BATCH_SIZE {
+                                            let index = packets.len();
+                                            match local.try_recv_from(&mut buffers[index]) {
+                                                Ok(packet) => packets.push(packet),
+                                                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                                                Err(err) if err.kind() == std::io::ErrorKind::ConnectionReset => continue,
+                                                Err(err) => {
+                                                    crate::p2plog!("fwd local→p2p batch recv error: {}", err);
+                                                    break;
+                                                }
+                                            }
                                         }
-                                        crate::p2plog!("fwd local→p2p forwarding {} bytes from {}", n, src);
-                                        if let Err(err) = p2p.send(&buf[..n]).await {
-                                            crate::p2plog!("fwd local→p2p send error: {}", err);
+                                        let mut send_failed = false;
+                                        for (index, &(n, src)) in packets.iter().enumerate() {
+                                            if src != target_addr {
+                                                crate::p2plog!("fwd local→p2p dropped {} bytes from {} (target {})", n, src, target_addr);
+                                                continue;
+                                            }
+                                            if let Err(err) = p2p.send(&buffers[index][..n]).await {
+                                                crate::p2plog!("fwd local→p2p send error: {}", err);
+                                                send_failed = true;
+                                                break;
+                                            }
+                                        }
+                                        if send_failed {
                                             break;
                                         }
                                     }
@@ -542,16 +582,37 @@ fn spawn_forwarders(
                 let local = local.clone();
                 let token = token.clone();
                 tokio::spawn(async move {
-                    let mut buf = vec![0u8; netx::UDP_FORWARD_BUF];
+                    let mut buffers = udp_forward_batch_buffers();
+                    let mut lengths = Vec::with_capacity(UDP_FORWARD_BATCH_SIZE);
                     loop {
                         tokio::select! {
                             _ = token.cancelled() => break,
-                            received = p2p.recv(&mut buf) => {
+                            received = p2p.recv(&mut buffers[0]) => {
                                 match received {
                                     Ok(n) => {
-                                        crate::p2plog!("fwd p2p→local forwarding {} bytes to {}", n, target_addr);
-                                        if let Err(err) = local.send_to(&buf[..n], target_addr).await {
-                                            crate::p2plog!("fwd p2p→local send error: {}", err);
+                                        lengths.clear();
+                                        lengths.push(n);
+                                        while lengths.len() < UDP_FORWARD_BATCH_SIZE {
+                                            let index = lengths.len();
+                                            match p2p.try_recv(&mut buffers[index]) {
+                                                Ok(n) => lengths.push(n),
+                                                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                                                Err(err) if err.kind() == std::io::ErrorKind::ConnectionReset => continue,
+                                                Err(err) => {
+                                                    crate::p2plog!("fwd p2p→local batch recv error: {}", err);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        let mut send_failed = false;
+                                        for (index, &n) in lengths.iter().enumerate() {
+                                            if let Err(err) = local.send_to(&buffers[index][..n], target_addr).await {
+                                                crate::p2plog!("fwd p2p→local send error: {}", err);
+                                                send_failed = true;
+                                                break;
+                                            }
+                                        }
+                                        if send_failed {
                                             break;
                                         }
                                     }

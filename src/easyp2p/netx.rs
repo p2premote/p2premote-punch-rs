@@ -22,35 +22,45 @@ pub fn listen_udp(bind: SocketAddr, reuse_addr: bool) -> io::Result<StdUdpSocket
         socket.set_only_v6(true)?;
     }
     socket.bind(&socket2::SockAddr::from(bind))?;
-    // Go's net package disables SIO_UDP_CONNRESET by default on Windows so
-    // unconnected UDP reads don't fail with WSAECONNRESET after an ICMP
-    // port-unreachable. Mirror that, or hole punching/forwarding dies.
+    // Go's net package disables both PORT_UNREACHABLE and NET_UNREACHABLE
+    // reporting for every UDP socket (net/fd_windows.go). Mirror both ioctls;
+    // otherwise Windows can surface WSAECONNRESET (10054) or WSAENETRESET
+    // (10052) on recv_from and abort an otherwise healthy punch round.
     #[cfg(windows)]
-    disable_udp_connreset(&socket);
+    configure_windows_udp_error_reporting(&socket)?;
     Ok(socket.into())
 }
 
-/// Best-effort SIO_UDP_CONNRESET=FALSE (Windows only, Go net parity).
+/// Match Go's netFD.init UDP setup on Windows.
 #[cfg(windows)]
-fn disable_udp_connreset(socket: &Socket) {
+fn configure_windows_udp_error_reporting(socket: &Socket) -> io::Result<()> {
     use std::os::windows::io::AsRawSocket;
-    use windows_sys::Win32::Networking::WinSock::WSAIoctl;
+    use windows_sys::Win32::Networking::WinSock::{WSAIoctl, SOCKET_ERROR};
     const SIO_UDP_CONNRESET: u32 = 0x9800_000C;
-    let mut enable: u32 = 0; // FALSE
-    let mut returned: u32 = 0;
-    unsafe {
-        WSAIoctl(
-            socket.as_raw_socket() as usize,
-            SIO_UDP_CONNRESET,
-            &mut enable as *mut u32 as *const core::ffi::c_void,
-            std::mem::size_of::<u32>() as u32,
-            std::ptr::null_mut(),
-            0,
-            &mut returned,
-            std::ptr::null_mut(),
-            None,
-        );
+    // Go internal/syscall/windows: IOC_IN | IOC_VENDOR | 15.
+    const SIO_UDP_NETRESET: u32 = 0x9800_000F;
+
+    for control_code in [SIO_UDP_CONNRESET, SIO_UDP_NETRESET] {
+        let mut flag: u32 = 0; // FALSE
+        let mut returned: u32 = 0;
+        let result = unsafe {
+            WSAIoctl(
+                socket.as_raw_socket() as usize,
+                control_code,
+                &mut flag as *mut u32 as *const core::ffi::c_void,
+                std::mem::size_of::<u32>() as u32,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+                None,
+            )
+        };
+        if result == SOCKET_ERROR {
+            return Err(io::Error::last_os_error());
+        }
     }
+    Ok(())
 }
 
 /// netx.SetUDPTTL: IP_TTL (v4) or IPV6_UNICAST_HOPS (v6).
@@ -83,6 +93,8 @@ pub async fn connected_udp(local: SocketAddr, remote: SocketAddr) -> io::Result<
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
     super::socketprotect::protect_socket_bound(&socket, &local);
     socket.bind(&socket2::SockAddr::from(local))?;
+    #[cfg(windows)]
+    configure_windows_udp_error_reporting(&socket)?;
     socket.set_nonblocking(true)?;
     let std_sock: StdUdpSocket = socket.into();
     let tokio_sock = tokio::net::UdpSocket::from_std(std_sock)?;

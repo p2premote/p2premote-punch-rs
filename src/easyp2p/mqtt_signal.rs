@@ -16,6 +16,10 @@ use tokio::sync::mpsc;
 use super::crypto::{self, SecurePayload};
 use super::{CancelToken, P2pError, Result, Scope, EXMODE_MUTUAL, EXMODE_PUBLISH_ONLY, EXMODE_WAIT_ONLY, TOPIC_DESC_SIGNAL};
 
+fn starts_background_publisher(exmode: i32) -> bool {
+    exmode != EXMODE_WAIT_ONLY
+}
+
 pub const MQTT_NO_PREFERRED_BROKER: i32 = -1;
 
 const MQTT_PUBLISH_SETTLE_WINDOW: Duration = Duration::from_millis(500);
@@ -570,7 +574,7 @@ impl MqttSignalSession {
         }
 
         let stop_publish = Arc::new(NotifyLike::new());
-        {
+        if starts_background_publisher(exmode) {
             // Background burst publisher.
             let session = self.clone();
             let topic = topic.clone();
@@ -726,6 +730,18 @@ impl MqttSignalSession {
             .get(topic)
             .map(|s| s.len())
             .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_only_never_starts_a_publisher() {
+        assert!(starts_background_publisher(EXMODE_MUTUAL));
+        assert!(!starts_background_publisher(EXMODE_WAIT_ONLY));
+        assert!(starts_background_publisher(EXMODE_PUBLISH_ONLY));
     }
 }
 

@@ -12,8 +12,11 @@ mod runtime;
 mod subnet_router;
 pub mod types;
 
+#[cfg(feature = "ffi")]
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int};
+use std::os::raw::c_int;
+#[cfg(feature = "ffi")]
+use std::os::raw::c_char;
 
 use types::*;
 
@@ -23,14 +26,17 @@ pub use types::{
     StopSubnetRouterInput, StopTunnelInput, SubnetRouterResult, UdpTunnelInput, UdpTunnelResult,
 };
 
+#[cfg(feature = "ffi")]
 const NULL_INPUT: &str = r#"{"ok":false,"error":"input is null"}"#;
 
+#[cfg(feature = "ffi")]
 fn alloc_cstring(s: String) -> *mut c_char {
     CString::new(s)
         .unwrap_or_else(|_| CString::new(r#"{"ok":false,"error":"result contains NUL byte"}"#).unwrap())
         .into_raw()
 }
 
+#[cfg(feature = "ffi")]
 unsafe fn input_to_string(input: *const c_char) -> Option<String> {
     if input.is_null() {
         return None;
@@ -114,6 +120,7 @@ fn handle_stop_udp_tunnel_json(input: &str) -> String {
 
 // ============ subnet router ============
 
+#[cfg(feature = "ffi")]
 fn encode_subnet_router_result(result: &SubnetRouterResult) -> String {
     match serde_json::to_string(result) {
         Ok(s) => s,
@@ -121,6 +128,7 @@ fn encode_subnet_router_result(result: &SubnetRouterResult) -> String {
     }
 }
 
+#[cfg(feature = "ffi")]
 fn handle_start_subnet_router_json(input: &str) -> String {
     let req: StartSubnetRouterInput = match serde_json::from_str(input) {
         Ok(req) => req,
@@ -184,6 +192,7 @@ fn handle_start_subnet_router_json(input: &str) -> String {
     encode_subnet_router_result(&subnet_router::start_subnet_router(req))
 }
 
+#[cfg(feature = "ffi")]
 fn handle_stop_subnet_router_json(input: &str) -> String {
     let req: StopSubnetRouterInput = match serde_json::from_str(input) {
         Ok(req) => req,
@@ -205,6 +214,7 @@ fn handle_stop_subnet_router_json(input: &str) -> String {
     encode_subnet_router_result(&subnet_router::stop_subnet_router(&req.handle_id))
 }
 
+#[cfg(feature = "ffi")]
 fn handle_get_subnet_router_status_json(input: &str) -> String {
     let req: GetSubnetRouterStatusInput = match serde_json::from_str(input) {
         Ok(req) => req,
@@ -228,6 +238,7 @@ fn handle_get_subnet_router_status_json(input: &str) -> String {
 
 // ============ userspace WireGuard peers ============
 
+#[cfg(feature = "ffi")]
 fn encode_json(value: &impl serde::Serialize) -> String {
     match serde_json::to_string(value) {
         Ok(s) => s,
@@ -235,6 +246,7 @@ fn encode_json(value: &impl serde::Serialize) -> String {
     }
 }
 
+#[cfg(feature = "ffi")]
 fn handle_start_windows_wg_peer_json(input: &str) -> String {
     let req: StartWindowsWgPeerInput = match serde_json::from_str(input) {
         Ok(req) => req,
@@ -256,6 +268,7 @@ fn handle_start_windows_wg_peer_json(input: &str) -> String {
     encode_json(&platform::start_userspace_wg_peer())
 }
 
+#[cfg(feature = "ffi")]
 fn handle_windows_wg_peer_json(input: &str, action: fn() -> WindowsWgPeerResult) -> String {
     let req: WindowsWgPeerHandleInput = match serde_json::from_str(input) {
         Ok(req) => req,
@@ -277,6 +290,7 @@ fn handle_windows_wg_peer_json(input: &str, action: fn() -> WindowsWgPeerResult)
     encode_json(&action())
 }
 
+#[cfg(feature = "ffi")]
 fn handle_windows_wg_peer_allowed_json(input: &str) -> String {
     let req: WindowsWgPeerAllowedInput = match serde_json::from_str(input) {
         Ok(req) => req,

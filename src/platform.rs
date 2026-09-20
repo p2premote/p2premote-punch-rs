@@ -6,6 +6,7 @@
 //! mirror the "unsupported" behavior Go shows on Linux
 //! (punchffi/windows_wg_dispatch_nonwindows.go).
 
+#[cfg(feature = "ffi")]
 use crate::types::{WgCapabilitiesResult, WgKeypairResult, WindowsWgPeerResult};
 
 pub fn platform_name() -> &'static str {
@@ -20,6 +21,7 @@ pub fn platform_name() -> &'static str {
     }
 }
 
+#[cfg(feature = "ffi")]
 pub fn platform_wg_capabilities() -> WgCapabilitiesResult {
     WgCapabilitiesResult {
         ok: true,
@@ -34,6 +36,7 @@ pub fn platform_wg_capabilities() -> WgCapabilitiesResult {
     }
 }
 
+#[cfg(feature = "ffi")]
 fn unsupported_userspace_wg() -> WindowsWgPeerResult {
     WindowsWgPeerResult {
         ok: false,
@@ -45,6 +48,7 @@ fn unsupported_userspace_wg() -> WindowsWgPeerResult {
     }
 }
 
+#[cfg(feature = "ffi")]
 pub fn generate_wg_keypair() -> WgKeypairResult {
     WgKeypairResult {
         ok: false,
@@ -56,18 +60,22 @@ pub fn generate_wg_keypair() -> WgKeypairResult {
     }
 }
 
+#[cfg(feature = "ffi")]
 pub fn start_userspace_wg_peer() -> WindowsWgPeerResult {
     unsupported_userspace_wg()
 }
 
+#[cfg(feature = "ffi")]
 pub fn stop_userspace_wg_peer() -> WindowsWgPeerResult {
     unsupported_userspace_wg()
 }
 
+#[cfg(feature = "ffi")]
 pub fn set_userspace_wg_peer_allowed() -> WindowsWgPeerResult {
     unsupported_userspace_wg()
 }
 
+#[cfg(feature = "ffi")]
 pub fn get_userspace_wg_peer_status() -> WindowsWgPeerResult {
     unsupported_userspace_wg()
 }
