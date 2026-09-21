@@ -14,10 +14,13 @@ use super::netx;
 use super::{P2pError, Result, Scope};
 
 pub const DEFAULT_STUN_SERVERS: &[&str] = &[
+    // 两个国内保底（腾讯云 + 芒果TV，双栈、故障域独立），其后为国际站。
+    // 列表纯本地探测用，不进交换协议，与对端列表是否一致无关。
+    "stun.gonc.cc:3478",
+    "stun.hitv.com:3478",
     "tcp://turn.cloudflare.com:80",
     "udp://turn.cloudflare.com:53?3478",
     "udp://stun.l.google.com:19302",
-    "stun.gonc.cc:3478",
     "global.turn.twilio.com:3478",
     "stun.nextcloud.com:443",
 ];
