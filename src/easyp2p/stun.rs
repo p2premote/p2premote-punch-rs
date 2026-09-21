@@ -41,6 +41,9 @@ pub fn stun_servers() -> Vec<String> {
 }
 
 const STUN_MAGIC: u32 = 0x2112_A442;
+// RFC 5389/8489: XOR-MAPPED-ADDRESS masks the 16-bit port with the
+// most-significant 16 bits of the magic cookie (0x2112), not its low half.
+const STUN_PORT_XOR_MASK: u16 = (STUN_MAGIC >> 16) as u16;
 const STUN_BINDING_REQUEST: u16 = 0x0001;
 const STUN_BINDING_SUCCESS: u16 = 0x0101;
 const ATTR_MAPPED_ADDRESS: u16 = 0x0001;
@@ -307,7 +310,7 @@ fn parse_mapped_address(msg: &[u8], txid: &[u8; 12]) -> Option<SocketAddr> {
         let value = &msg[value_start..value_start + attr_len];
         if attr_type == ATTR_XOR_MAPPED_ADDRESS && value.len() >= 8 {
             let family = value[1];
-            let xport = u16::from_be_bytes([value[2], value[3]]) ^ (STUN_MAGIC as u16);
+            let xport = u16::from_be_bytes([value[2], value[3]]) ^ STUN_PORT_XOR_MASK;
             let magic_bytes = STUN_MAGIC.to_be_bytes();
             match family {
                 0x01 if value.len() >= 8 => {
@@ -886,7 +889,7 @@ mod tests {
         let txid = [9u8; 12];
         let magic = STUN_MAGIC.to_be_bytes();
         let mut addr = vec![0x00, 0x01];
-        let xport = 80u16 ^ (STUN_MAGIC as u16);
+        let xport = 80u16 ^ STUN_PORT_XOR_MASK;
         addr.extend_from_slice(&xport.to_be_bytes());
         let ip = [1, 2, 3, 4];
         for i in 0..4 {
@@ -902,6 +905,22 @@ mod tests {
         msg.extend_from_slice(&addr);
         let parsed = parse_mapped_address(&msg, &txid).unwrap();
         assert_eq!(parsed.to_string(), "1.2.3.4:80");
+    }
+
+    #[test]
+    fn parse_xor_mapped_v4_real_capture_preserves_port() {
+        // Captured from stun.gonc.cc. Local UDP source port was 56591; the
+        // response must decode to the same public port, not 22623 (the value
+        // produced when XORing with the cookie's low 16 bits, 0xa442).
+        let response = [
+            0x01, 0x01, 0x00, 0x0c, 0x21, 0x12, 0xa4, 0x42,
+            0x09, 0xce, 0xf7, 0xbb, 0xdb, 0x92, 0xeb, 0xf2,
+            0xb7, 0x41, 0x0f, 0xf6, 0x00, 0x20, 0x00, 0x08,
+            0x00, 0x01, 0xfc, 0x1d, 0x54, 0xbd, 0x2e, 0x4f,
+        ];
+        let txid: [u8; 12] = response[8..20].try_into().unwrap();
+        let parsed = parse_mapped_address(&response, &txid).unwrap();
+        assert_eq!(parsed.to_string(), "117.175.138.13:56591");
     }
 
     #[test]
