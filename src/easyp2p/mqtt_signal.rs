@@ -16,10 +16,6 @@ use tokio::sync::mpsc;
 use super::crypto::{self, SecurePayload};
 use super::{CancelToken, P2pError, Result, Scope, EXMODE_MUTUAL, EXMODE_PUBLISH_ONLY, EXMODE_WAIT_ONLY, TOPIC_DESC_SIGNAL};
 
-fn starts_background_publisher(exmode: i32) -> bool {
-    exmode != EXMODE_WAIT_ONLY
-}
-
 pub const MQTT_NO_PREFERRED_BROKER: i32 = -1;
 
 const MQTT_PUBLISH_SETTLE_WINDOW: Duration = Duration::from_millis(500);
@@ -574,8 +570,7 @@ impl MqttSignalSession {
         }
 
         let stop_publish = Arc::new(NotifyLike::new());
-        if starts_background_publisher(exmode) {
-            // Background burst publisher.
+        let start_background_publisher = || {
             let session = self.clone();
             let topic = topic.clone();
             let payload = send_data.to_string();
@@ -603,7 +598,7 @@ impl MqttSignalSession {
                     }
                 }
             });
-        }
+        };
 
         let stop_publisher_after = |delay: Duration| {
             let stop = stop_publish.clone();
@@ -628,6 +623,7 @@ impl MqttSignalSession {
             if success == 0 {
                 return Err(P2pError::msg("failed to publish MQTT reply"));
             }
+            start_background_publisher();
             stop_publisher_after(MQTT_PUBLISH_KEEP_ALIVE);
             return Ok(ExchangeOutcome {
                 data: String::new(),
@@ -636,12 +632,10 @@ impl MqttSignalSession {
             });
         }
 
-        // mutual: publish immediately before waiting.
-        if exmode == EXMODE_MUTUAL {
-            self.publish(&topic, send_data, 1, Duration::ZERO).await;
-        }
-
-        // Register waiter.
+        // Go parity: register the waiter before the first mutual publish. This
+        // prevents a fast peer reply (or our broker echo followed by the peer
+        // reply) from racing through the one-slot pending map before the
+        // exchange is ready to receive it.
         let (recv_tx, mut recv_rx) = mpsc::channel(1);
         let (err_tx, mut err_rx) = mpsc::channel(1);
         let waiter = Arc::new(Waiter {
@@ -665,6 +659,11 @@ impl MqttSignalSession {
                 drop(state);
                 self.deliver_message(&waiter, &topic, pending.index, &pending.data);
             }
+        }
+
+        if exmode == EXMODE_MUTUAL {
+            self.publish(&topic, send_data, 1, Duration::ZERO).await;
+            start_background_publisher();
         }
 
         let outcome = tokio::select! {
@@ -730,18 +729,6 @@ impl MqttSignalSession {
             .get(topic)
             .map(|s| s.len())
             .unwrap_or(0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wait_only_never_starts_a_publisher() {
-        assert!(starts_background_publisher(EXMODE_MUTUAL));
-        assert!(!starts_background_publisher(EXMODE_WAIT_ONLY));
-        assert!(starts_background_publisher(EXMODE_PUBLISH_ONLY));
     }
 }
 
