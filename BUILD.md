@@ -29,7 +29,7 @@ C ABI（`ffi` feature，默认关闭）当前**无消费者**，仅作静态库�
   ——extern "C" 声明不构成 crate 依赖引用，rustc 不会把未使用的依赖带进链接图。
 - `gonc_ffi.rs` 的 15 个 extern 声明与本库 `#[no_mangle]` 导出一一对应，
   客户端其余 Rust 代码零改动；core/build.rs 在 Linux 不再要求预构建 `.a`。
-- `build-linux-headless.sh`：service/cli 以
+- `_build-linux-headless.sh`：service/cli 以
   `cargo build --release --target <arch>-unknown-linux-musl` 构建（默认 thin-LTO），
   musl 静态产物摆脱 glibc 基线；builder 镜像（tag v4）内置 musl rust-std。
 - `build-wireguard-go.sh` 未改动：wireguard-go 回退二进制仍从 Go 仓库
