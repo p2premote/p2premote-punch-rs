@@ -4,6 +4,8 @@
 //!   cargo run --release --example interop -- exchange <exmode> <token> <senddata>
 //!   cargo run --release --example interop -- tunnel <active|passive> <token> [wgPort]
 //!   cargo run --release --example interop -- punch-tcp <token>
+//!   cargo run --release --example interop -- probe <udp4|udp6|tcp4|tcp6|any>
+//!   cargo run --release --example interop -- tunnel <active|passive> <token> [wgPort] [network]
 //!
 //! Mirrors the Go harness in go-interop/ so the two implementations can be
 //! pointed at each other over the real network. punch-tcp runs the raw TCP
@@ -35,6 +37,7 @@ fn main() {
         "exchange" => exchange(&args[2..]),
         "tunnel" => tunnel(&args[2..]),
         "punch-tcp" => punch_tcp(&args[2..]),
+        "probe" => probe_cmd(&args[2..]),
         "wait" => wait_cmd(&args[2..]),
         "hello" => hello_cmd(&args[2..]),
         other => {
@@ -172,7 +175,7 @@ fn exchange(args: &[String]) {
         "token": args[1],
         "exmode": exmode,
         "send_data": args[2],
-        "timeout_secs": 60,
+        "timeout_secs": 100,
     })
     .to_string();
     let out = call(Exchange, &input);
@@ -184,6 +187,7 @@ fn tunnel(args: &[String]) {
     let token = args[1].clone();
     let default_port: i32 = if role == "active" { 54820 } else { 54821 };
     let wg_port: i32 = args.get(2).map(|p| p.parse().unwrap()).unwrap_or(default_port);
+    let network: String = args.get(3).cloned().unwrap_or_else(|| "udp4".to_string());
 
     // ACK echo server on the WG endpoint port.
     let echo = UdpSocket::bind(("127.0.0.1", wg_port as u16)).expect("bind wg port");
@@ -201,8 +205,8 @@ fn tunnel(args: &[String]) {
         "token": token,
         "role_hint": role,
         "traversal_mode": "auto",
-        "network": "udp4",
-        "timeout_secs": 60,
+        "network": network,
+        "timeout_secs": 100,
         "remote_target_ip": "127.0.0.1",
         "remote_target_port": wg_port,
         "local_listen_ip": "127.0.0.1",
@@ -247,3 +251,48 @@ fn tunnel(args: &[String]) {
     println!("STOP {}", out);
     let _ = echo_thread.join();
 }
+
+/// Per-network STUN probe through the production path.
+fn probe_cmd(args: &[String]) {
+    let network = args[0].clone();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            use p2premote_punch::easyp2p::stun::{analyze_stun_results, get_networks_public_ips};
+            use p2premote_punch::easyp2p::Scope;
+            let networks = p2premote_punch::easyp2p::stun::networks_for_stun(&network)
+                .unwrap_or_else(|e| {
+                    eprintln!("bad network: {}", e);
+                    std::process::exit(2);
+                });
+            println!("PROBE network={:?} matrix={:?}", network, networks);
+            let scope = Scope::from_timeout(Duration::from_secs(15));
+            let results = get_networks_public_ips(
+                &scope,
+                &networks,
+                "",
+                Duration::from_millis(2828),
+            )
+            .await;
+            match results {
+                Ok(rs) => {
+                    let ok = rs.iter().filter(|r| r.err.is_none()).count();
+                    println!("PROBE_SUMMARY requested={} succeeded={}", rs.len(), ok);
+                    for r in &rs {
+                        if r.err.is_some() {
+                            println!("  [{}] err={:?}", r.index, r.err);
+                        } else {
+                            println!("  [{}] local={} nat={}", r.index, r.local, r.nat);
+                        }
+                    }
+                    for a in analyze_stun_results(&rs) {
+                        println!("PROBE_CLASS network={} lan={} nat={} type={}", a.network, a.lan, a.nat, a.nattype);
+                    }
+                }
+                Err(e) => println!("PROBE_FAILED error={}", e),
+            }
+        });
+}
+
