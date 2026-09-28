@@ -1,7 +1,7 @@
 //! Global socket-protect hook, the Rust port of easyp2p/socketprotect.go.
 //!
-//! Android embeds this library inside a VpnService: every UDP socket used
-//! for NAT punching must be passed to `VpnService.protect(fd)` or its
+//! Android embeds this library inside a VpnService: public UDP and TCP sockets
+//! used for NAT detection/punching must be passed to `VpnService.protect(fd)` or their
 //! traffic is routed back into the VPN's own TUN device. The mobile
 //! binding registers a callback here before starting any exchange.
 //!

@@ -562,6 +562,11 @@ async fn dial_tcp_bind(
         tokio::net::TcpSocket::new_v4()
     }
     .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "android")]
+    match bind {
+        Some(address) => super::socketprotect::protect_socket_bound(&socket, &address),
+        None => super::socketprotect::protect_socket(&socket),
+    }
     // netx.ControlTCP: SO_REUSEADDR + SO_REUSEPORT before bind.
     let _ = socket.set_reuseaddr(true);
     #[cfg(unix)]

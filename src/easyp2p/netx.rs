@@ -122,6 +122,8 @@ pub async fn connected_udp_wildcard(local: SocketAddr, remote: SocketAddr) -> io
 pub fn listen_tcp(bind: SocketAddr, reuse: bool) -> io::Result<TcpListener> {
     let domain = if bind.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    #[cfg(target_os = "android")]
+    super::socketprotect::protect_socket_bound(&socket, &bind);
     if reuse {
         socket.set_reuse_address(true)?;
         #[cfg(unix)]
@@ -148,6 +150,11 @@ pub async fn connect_tcp_bind(
     } else {
         tokio::net::TcpSocket::new_v4()
     }?;
+    #[cfg(target_os = "android")]
+    match bind {
+        Some(address) => super::socketprotect::protect_socket_bound(&socket, &address),
+        None => super::socketprotect::protect_socket(&socket),
+    }
     if reuse {
         let _ = socket.set_reuseaddr(true);
         #[cfg(unix)]
