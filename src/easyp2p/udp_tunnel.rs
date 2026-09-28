@@ -241,7 +241,7 @@ async fn establish_internet_udp_p2p(
     let mut exchange_ok_attempt: i32 = 0;
     let mut probe_error: Option<P2pError> = None;
     loop {
-        crate::p2plog!("=== UDP tunnel P2P attempt {} ===", attempt);
+        crate::p2plog!("=== P2P tunnel attempt {}: network={} ===", attempt, network);
         match p2p::easy_p2p_mp_with_options(
             scope,
             network,
@@ -255,8 +255,9 @@ async fn establish_internet_udp_p2p(
             Ok(conn_info) => return (Some(conn_info), attempt, None),
             Err(err) => {
                 crate::p2pevent!(
-                    "udp tunnel attempt failed: attempt={}, exchange_succeeded={}, deadline_expired={}, remaining_ms={}, error={}",
+                    "p2p tunnel attempt failed: attempt={}, network={}, exchange_succeeded={}, deadline_expired={}, remaining_ms={}, error={}",
                     attempt,
+                    network,
                     !err.message.contains("exchange address info"),
                     scope.expired(),
                     scope.remaining().as_millis(),
