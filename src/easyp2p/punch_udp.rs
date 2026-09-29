@@ -19,15 +19,12 @@ const RPP_TIMEOUT_SECS: u64 = 7;
 
 /// A connected UDP socket produced by a successful punch.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct PunchedConn {
     socket: Arc<UdpSocket>,
-    local: SocketAddr,
     remote: SocketAddr,
 }
 
 impl PunchedConn {
-    #[allow(dead_code)]
     pub async fn send(&self, buf: &[u8]) -> std::io::Result<usize> {
         self.socket.send(buf).await
     }
@@ -37,16 +34,8 @@ impl PunchedConn {
     pub fn try_recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.socket.try_recv(buf)
     }
-    #[allow(dead_code)]
-    pub fn local_addr(&self) -> SocketAddr {
-        self.local
-    }
     pub fn remote_addr(&self) -> SocketAddr {
         self.remote
-    }
-    #[allow(dead_code)]
-    pub fn socket(&self) -> Arc<UdpSocket> {
-        self.socket.clone()
     }
 }
 
@@ -560,7 +549,6 @@ async fn finalize_main_conn(
     let _ = connected.send(punch_payload).await;
     Ok(PunchedConn {
         socket: connected,
-        local,
         remote,
     })
 }
@@ -576,7 +564,6 @@ async fn finalize_rsp_conn(
     let _ = connected.send(punch_payload).await;
     Ok(PunchedConn {
         socket: connected,
-        local,
         remote,
     })
 }
@@ -1015,7 +1002,10 @@ mod tests {
         let rebound = finalize_rsp_conn(claim.local, claim.remote, &payload)
             .await
             .expect("Go-style close and rebind of winning source port");
-        assert_eq!(rebound.local_addr(), claim.local);
+        assert_eq!(
+            rebound.socket.local_addr().expect("rebound socket bound"),
+            claim.local
+        );
         assert_eq!(rebound.remote_addr(), peer_addr);
         echo.abort();
     }

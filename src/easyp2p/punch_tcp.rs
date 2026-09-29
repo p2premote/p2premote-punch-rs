@@ -31,8 +31,6 @@ const ACTIVE_DIAL_DELAY: Duration = Duration::from_secs(2);
 /// A punched TCP stream produced by a successful traversal.
 pub struct TcpPunchedConn {
     pub stream: TcpStream,
-    #[allow(dead_code)]
-    pub local: SocketAddr,
     pub remote: SocketAddr,
 }
 
@@ -130,7 +128,6 @@ async fn do_handshake(
     mut stream: TcpStream,
     tag: &str,
 ) -> std::result::Result<TcpPunchedConn, String> {
-    let local = stream.local_addr().map_err(|e| e.to_string())?;
     let remote = stream.peer_addr().map_err(|e| e.to_string())?;
     let payload = sh.payload.clone();
     let mut buf = vec![0u8; payload.len()];
@@ -164,7 +161,7 @@ async fn do_handshake(
             return Err(format!("connection({}) not selected", tag));
         }
     }
-    Ok(TcpPunchedConn { stream, local, remote })
+    Ok(TcpPunchedConn { stream, remote })
 }
 
 /// tryCommit: only the first commit sends the connection and cancels all other

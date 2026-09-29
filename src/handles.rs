@@ -32,12 +32,3 @@ pub fn stop_udp_tunnel(handle_id: &str) {
         }
     }
 }
-
-#[allow(dead_code)]
-pub fn lookup_udp_tunnel(handle_id: &str) -> Option<UdpTunnelResult> {
-    let guard = TUNNELS.lock().unwrap();
-    guard
-        .as_ref()
-        .and_then(|map| map.get(handle_id))
-        .map(|entry| entry.result.clone())
-}

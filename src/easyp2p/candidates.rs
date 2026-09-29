@@ -87,19 +87,6 @@ fn ip4_is_private(v4: std::net::Ipv4Addr) -> bool {
     o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168)
 }
 
-#[allow(dead_code)]
-pub fn ip_is_loopback(ip: IpAddr) -> bool {
-    ip.is_loopback()
-}
-
-#[allow(dead_code)]
-pub fn ip_is_link_local(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_link_local(),
-        IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
-    }
-}
-
 /// extractIP: host part of "host:port" (bare IPs pass through).
 pub fn extract_ip(addr: &str) -> String {
     match netx::split_host_port(addr) {
@@ -451,23 +438,6 @@ pub fn count_unique_public_ips(infos: &[PunchingAddressInfo], ver: &str) -> usiz
             continue;
         }
         if info.nat_type == "relay" {
-            continue;
-        }
-        let host = netx::split_host_port(&info.nat)
-            .map(|(h, _)| h)
-            .unwrap_or_else(|| info.nat.clone());
-        unique.insert(host);
-    }
-    unique.len()
-}
-
-pub fn count_relay_ipv4(infos: &[PunchingAddressInfo]) -> usize {
-    let mut unique: HashSet<String> = HashSet::new();
-    for info in infos {
-        if !info.network.ends_with('4') {
-            continue;
-        }
-        if info.nat_type != "relay" {
             continue;
         }
         let host = netx::split_host_port(&info.nat)

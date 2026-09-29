@@ -88,14 +88,12 @@ struct LanAck {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LanDiscoverResult {
     pub local_ip: String,
     pub local_port: u16,
     pub remote_ip: String,
     pub remote_port: u16,
     pub transport: String,
-    pub is_initiator: bool,
 }
 
 // ============ crypto ============
@@ -460,7 +458,6 @@ async fn lan_initiator(
                     remote_ip: resp.0.ip,
                     remote_port: resp.0.port as u16,
                     transport: final_tp,
-                    is_initiator: true,
                 });
             }
         }
@@ -554,7 +551,6 @@ async fn lan_responder(
             remote_ip: confirm.ip,
             remote_port: confirm.port as u16,
             transport: confirm.transport,
-            is_initiator: false,
         });
     }
 }
@@ -598,14 +594,7 @@ pub async fn easy_p2p_lan(
     let sess_ctx = P2PSessionContext {
         shared_key,
         signal: None,
-        local_bind_ip: String::new(),
         local_public_ipv4_count: 1,
-        local_public_ipv6_count: 0,
-        remote_public_ipv4_count: 1,
-        remote_public_ipv6_count: 0,
-        relay_available: false,
-        local_caps: Vec::new(),
-        remote_caps: Vec::new(),
     };
 
     let (conn, is_client) = if network == "tcp4" {

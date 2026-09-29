@@ -255,14 +255,6 @@ impl Scope {
         self.remaining().min(requested)
     }
 
-    #[allow(dead_code)]
-    pub async fn sleep_or_cancelled(&self, token: &CancelToken, delay: Duration) -> Result<()> {
-        tokio::select! {
-            _ = self.sleep_until_deadline(delay) => Ok(()),
-            _ = token.cancelled() => Err(P2pError::msg("operation cancelled")),
-        }
-    }
-
     pub async fn sleep_until_deadline(&self, delay: Duration) {
         let target = (Instant::now() + delay).min(self.deadline);
         if target <= Instant::now() {
@@ -339,13 +331,4 @@ macro_rules! p2plog {
             $crate::easyp2p::p2p_diag_line(&format!($($arg)*));
         }
     };
-}
-
-#[allow(dead_code)]
-pub fn now_unix_nanos() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
 }

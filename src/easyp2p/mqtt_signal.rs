@@ -194,16 +194,6 @@ impl MqttSignalSession {
         Ok(session)
     }
 
-    #[allow(dead_code)]
-    pub fn is_closed(&self) -> bool {
-        self.state.lock().unwrap().closed
-    }
-
-    #[allow(dead_code)]
-    pub fn cancel_token(&self) -> &CancelToken {
-        &self.cancel
-    }
-
     pub fn close(&self) {
         {
             let mut state = self.state.lock().unwrap();

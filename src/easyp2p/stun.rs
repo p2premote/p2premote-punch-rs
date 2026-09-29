@@ -65,13 +65,11 @@ pub fn networks_for_stun(network: &str) -> Result<Vec<String>> {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct StunResult {
     pub index: usize,
     pub network: String,
     pub local: String,
     pub nat: String,
-    pub remote: String,
     pub err: Option<String>,
 }
 
@@ -668,12 +666,11 @@ pub async fn get_public_ips(
         let spec_index = spec.index;
         tokio::spawn(async move {
             let started = Instant::now();
-            let send = |err: Option<String>, local: String, nat: String, remote: String| StunResult {
+            let send = |err: Option<String>, local: String, nat: String| StunResult {
                 index: spec_index,
                 network: network_name.clone(),
                 local,
                 nat,
-                remote,
                 err,
             };
             let mut conn = match dial_stun_conn(&network_name, &spec_addr, bind_addr, mux_ref.as_ref()).await {
@@ -681,7 +678,7 @@ pub async fn get_public_ips(
                 Err(err) => {
                     crate::p2plog!("STUN dial failed [{}]: {}", spec_addr, err);
                     let _ = tx
-                        .send(send(Some(format!("STUN dial failed: {}", err)), String::new(), String::new(), String::new()))
+                        .send(send(Some(format!("STUN dial failed: {}", err)), String::new(), String::new()))
                         .await;
                     return;
                 }
@@ -693,14 +690,13 @@ pub async fn get_public_ips(
                             None,
                             conn.local_addr.to_string(),
                             nat_addr.to_string(),
-                            conn.remote_addr.to_string(),
                         ))
                         .await;
                 }
                 Err(err) => {
                     crate::p2plog!("STUN response error [{}]: {}", spec_addr, err);
                     let _ = tx
-                        .send(send(Some(format!("STUN response error: {}", err)), String::new(), String::new(), String::new()))
+                        .send(send(Some(format!("STUN response error: {}", err)), String::new(), String::new()))
                         .await;
                 }
             }
@@ -718,7 +714,6 @@ pub async fn get_public_ips(
                     network: result_network.clone(),
                     local: String::new(),
                     nat: String::new(),
-                    remote: String::new(),
                     err: Some("context deadline exceeded".to_string()),
                 });
             }
@@ -938,7 +933,6 @@ mod tests {
             network: network.into(),
             local: local.into(),
             nat: nat.into(),
-            remote: String::new(),
             err: None,
         };
         // single result, port preserved → easy

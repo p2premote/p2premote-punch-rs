@@ -14,19 +14,11 @@ use super::stun;
 use super::netx;
 use super::{P2pError, Result, Scope, CAP_CANONICAL_LAN_PROBE, CAP_LAN_PROBE, CAP_MULTI_EXIT_UDP_PUNCH, EXMODE_MUTUAL, TOPIC_DESC_SIGNAL};
 
-#[allow(dead_code)]
 pub struct P2PSessionContext {
     pub shared_key: [u8; 32],
     /// None in LAN-only mode (no MQTT signaling); Some for Internet traversal.
     pub signal: Option<Arc<MqttSignalSession>>,
-    pub local_bind_ip: String,
     pub local_public_ipv4_count: usize,
-    pub local_public_ipv6_count: usize,
-    pub remote_public_ipv4_count: usize,
-    pub remote_public_ipv6_count: usize,
-    pub relay_available: bool,
-    pub local_caps: Vec<String>,
-    pub remote_caps: Vec<String>,
 }
 
 /// Transport-agnostic punched connection: UDP socket or TCP stream.
@@ -245,8 +237,6 @@ pub async fn do_auto_p2p_ex2(
     let local_public_ipv6_count = candidates::count_unique_public_ips(&my_payload.addresses, "6");
     let remote_public_ipv4_count = candidates::count_unique_public_ips(&remote_payload.addresses, "4");
     let remote_public_ipv6_count = candidates::count_unique_public_ips(&remote_payload.addresses, "6");
-    let relay_available = candidates::count_relay_ipv4(&my_payload.addresses) > 0
-        || candidates::count_relay_ipv4(&remote_payload.addresses) > 0;
 
     let (lan_probe_candidates, mut built) = candidates::build_base_p2p_candidates(
         &my_payload.addresses,
@@ -283,23 +273,10 @@ pub async fn do_auto_p2p_ex2(
         }
     }
 
-    let local_bind_ip = if bind.is_empty() {
-        String::new()
-    } else {
-        netx::split_host_port(bind).map(|(h, _)| h).unwrap_or_default()
-    };
-
     let sess_ctx = P2PSessionContext {
         shared_key,
         signal: Some(signal.clone()),
-        local_bind_ip,
         local_public_ipv4_count,
-        local_public_ipv6_count,
-        remote_public_ipv4_count,
-        remote_public_ipv6_count,
-        relay_available,
-        local_caps: my_payload.caps.clone(),
-        remote_caps: remote_payload.caps.clone(),
     };
     let sorted = candidates::sort_p2p_address_infos(built.final_results);
     crate::p2pevent!(

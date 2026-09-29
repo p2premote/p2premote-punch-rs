@@ -3,10 +3,6 @@
 
 use serde::{Deserialize, Serialize};
 
-#[allow(dead_code)]
-fn is_zero_i64(v: &i64) -> bool {
-    *v == 0
-}
 fn is_zero_i32(v: &i32) -> bool {
     *v == 0
 }

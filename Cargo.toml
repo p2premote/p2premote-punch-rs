@@ -31,9 +31,7 @@ hmac = "0.12"
 p256 = { version = "0.13", features = ["ecdh", "arithmetic"] }
 base64 = "0.22"
 rand = "0.8"
-libc = "0.2"
 if-addrs = "0.13"
-futures = "0.3"
 tracing = "0.1"
 
 [target.'cfg(windows)'.dependencies]

@@ -18,6 +18,7 @@ use std::os::raw::c_int;
 #[cfg(feature = "ffi")]
 use std::os::raw::c_char;
 
+#[cfg(feature = "ffi")]
 use types::*;
 
 /// Public request/result types for native Rust integrations.
@@ -45,12 +46,14 @@ unsafe fn input_to_string(input: *const c_char) -> Option<String> {
     Some(String::from_utf8_lossy(bytes).into_owned())
 }
 
+#[cfg(feature = "ffi")]
 fn json_err(prefix: &str, err: serde_json::Error) -> String {
     format!("{}: {}", prefix, err)
 }
 
 // ============ UDP tunnel ============
 
+#[cfg(feature = "ffi")]
 fn handle_start_udp_tunnel_json(input: &str) -> String {
     let req: UdpTunnelInput = match serde_json::from_str(input) {
         Ok(req) => req,
@@ -86,6 +89,7 @@ fn handle_start_udp_tunnel_json(input: &str) -> String {
     }
 }
 
+#[cfg(feature = "ffi")]
 fn encode_tunnel_result(result: &UdpTunnelResult) -> String {
     match serde_json::to_string(result) {
         Ok(s) => s,
@@ -93,6 +97,7 @@ fn encode_tunnel_result(result: &UdpTunnelResult) -> String {
     }
 }
 
+#[cfg(feature = "ffi")]
 fn encode_stop_tunnel_result(ok: bool, error: &str) -> String {
     let result = StopTunnelResult {
         ok,
@@ -104,6 +109,7 @@ fn encode_stop_tunnel_result(ok: bool, error: &str) -> String {
     }
 }
 
+#[cfg(feature = "ffi")]
 fn handle_stop_udp_tunnel_json(input: &str) -> String {
     let req: StopTunnelInput = match serde_json::from_str(input) {
         Ok(req) => req,
@@ -319,8 +325,10 @@ fn handle_windows_wg_peer_allowed_json(input: &str) -> String {
 //   1 = waitOnly passive side step 1: only receive, no broadcast
 //   2 = reply    passive side step 2: broadcast sendData + receive confirmation
 
+#[cfg(feature = "ffi")]
 const WGVPN_EXCHANGE_TOPIC_SALT: &str = "wgvpn-kx/";
 
+#[cfg(feature = "ffi")]
 fn handle_exchange_json(input: &str) -> String {
     let req: ExchangeInput = match serde_json::from_str(input) {
         Ok(req) => req,
@@ -443,21 +451,6 @@ pub mod api {
         Ok(types::ExchangeResult { ok: true, recv_data: recv, error: String::new() })
     }
 
-    /// Start a UDP4 punch tunnel from a JSON request.
-    pub fn start_udp_tunnel_json(input: &str) -> String {
-        super::handle_start_udp_tunnel_json(input)
-    }
-
-    /// Stop a previously registered UDP tunnel from a JSON request.
-    pub fn stop_udp_tunnel_json(input: &str) -> String {
-        super::handle_stop_udp_tunnel_json(input)
-    }
-
-    /// Perform the existing gonc-compatible address exchange.
-    pub fn exchange_json(input: &str) -> String {
-        super::handle_exchange_json(input)
-    }
-
     /// NAT classification entry for the caller (gonc -nat-checker
     /// equivalent): probe STUN and return the analyzed addresses.
     #[derive(Debug, Clone, serde::Serialize)]
@@ -493,6 +486,7 @@ pub mod api {
     }
 }
 
+#[cfg(feature = "ffi")]
 fn encode_exchange_result(result: &ExchangeResult) -> String {
     match serde_json::to_string(result) {
         Ok(s) => s,
@@ -670,18 +664,6 @@ pub extern "C" fn FreeCString(ptr: *mut c_char) {
 #[no_mangle]
 pub extern "C" fn Exchange(input: *const c_char) -> *mut c_char {
     ffi_guard(input, handle_exchange_json)
-}
-
-/// Android VpnService socket-protect injection (parity with the Go mobile
-/// binding's SetProtectCallback): registers a C callback that receives every
-/// punching socket's fd before bind/connect. Pass None to clear.
-#[cfg(feature = "ffi")]
-#[no_mangle]
-pub extern "C" fn SetProtectFunc(func: Option<extern "C" fn(fd: i32) -> bool>) {
-    match func {
-        Some(f) => easyp2p::socketprotect::set_socket_protect(Some(Box::new(move |fd| f(fd)))),
-        None => easyp2p::socketprotect::set_socket_protect(None),
-    }
 }
 
 // Keep a C-visible marker so accidental double-definition with the Go library

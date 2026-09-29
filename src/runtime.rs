@@ -5,11 +5,15 @@
 //! (StartUdpTunnel can run for minutes). A private multi-thread runtime keeps
 //! that contract without depending on the host's executor.
 
+#[cfg(feature = "ffi")]
 use std::sync::OnceLock;
+#[cfg(feature = "ffi")]
 use tokio::runtime::Runtime;
 
+#[cfg(feature = "ffi")]
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
+#[cfg(feature = "ffi")]
 pub fn runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -22,6 +26,7 @@ pub fn runtime() -> &'static Runtime {
 }
 
 /// Run a future to completion on the private runtime, blocking the caller.
+#[cfg(feature = "ffi")]
 pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
     runtime().block_on(future)
 }

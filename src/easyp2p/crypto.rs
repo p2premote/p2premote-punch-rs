@@ -22,11 +22,6 @@ pub fn b64() -> base64::engine::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
 
-#[allow(dead_code)]
-pub fn b64_raw() -> base64::engine::GeneralPurpose {
-    base64::engine::general_purpose::STANDARD_NO_PAD
-}
-
 pub fn calculate_md5(input: &str) -> String {
     use md5::Md5;
     let mut h = Md5::new();

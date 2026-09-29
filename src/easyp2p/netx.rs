@@ -3,7 +3,6 @@
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, UdpSocket as StdUdpSocket};
-use std::time::Duration;
 
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 
@@ -72,11 +71,6 @@ pub fn set_udp_ttl(socket: &tokio::net::UdpSocket, ttl: u32) -> io::Result<()> {
     } else {
         sref.set_ttl_v4(ttl)
     }
-}
-
-#[allow(dead_code)]
-pub fn get_udp_ttl(socket: &tokio::net::UdpSocket) -> io::Result<u32> {
-    SockRef::from(socket).ttl_v4()
 }
 
 /// Create an unconnected bound socket as a tokio UdpSocket.
@@ -198,12 +192,6 @@ pub fn get_free_port_for(ipv6: bool) -> io::Result<u16> {
 /// GetFreePort (IPv4 form, the netx.GetFreePort default).
 pub fn get_free_port() -> io::Result<u16> {
     get_free_port_for(false)
-}
-
-/// Wait with deadline, returning remaining time budget style used by copy loops.
-#[allow(dead_code)]
-pub fn deadline_from_now(timeout: Duration) -> tokio::time::Instant {
-    tokio::time::Instant::from_std(std::time::Instant::now() + timeout)
 }
 
 /// Split "host:port" keeping brackets for IPv6; returns None when not host:port.
