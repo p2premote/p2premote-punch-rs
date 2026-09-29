@@ -123,7 +123,6 @@ impl MqttSignalSession {
     pub async fn new(
         scope: &Scope,
         client_id: &str,
-        _local_ip: &str,
     ) -> Result<Arc<MqttSignalSession>> {
         let mut brokers = Vec::new();
         for server in super::mqtt_broker_servers() {

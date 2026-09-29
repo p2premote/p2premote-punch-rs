@@ -107,7 +107,7 @@ pub async fn auto_p2p_udp_nat_traversal(
     let punch_payload = super::crypto::derive_key_for_payload(session_uid, true);
 
     crate::p2plog!("=== Trying P2P Connection ===");
-    let is_client = candidates::select_role(p2p_info, "");
+    let is_client = candidates::select_role(p2p_info);
 
     let (same_nat, similar_lan) = candidates::compare_p2p_addresses(p2p_info);
     let mut remote_addr = p2p_info.remote_nat.clone();
@@ -267,7 +267,6 @@ pub async fn auto_p2p_udp_nat_traversal(
     let round_scope = scope.child(Duration::from_secs(count));
 
     let (recv_tx, mut recv_rx) = mpsc::channel::<bool>(1);
-    let _ = &recv_tx; // keep alive for the whole traversal
     let (err_tx, mut err_rx) = mpsc::channel::<String>(8);
     let (hole_tx, mut hole_rx) = mpsc::channel::<HoleClaim>(1);
 

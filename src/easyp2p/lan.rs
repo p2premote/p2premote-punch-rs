@@ -295,8 +295,6 @@ pub async fn lan_discover(
     let mut dispatch = spawn_dispatcher(mc.clone(), stop.clone(), key);
 
     let (result_tx, mut result_rx) = mpsc::channel::<std::result::Result<LanDiscoverResult, P2pError>>(2);
-    let init_stop = stop.clone();
-    let resp_stop = stop.clone();
 
     // initiator
     {
@@ -306,14 +304,12 @@ pub async fn lan_discover(
         let result_tx = result_tx.clone();
         let self_nonces = self_nonces.clone();
         let punch_port = punch_port.clone();
-        let stop = init_stop;
         let scope = scope.clone();
         let sid = sid.clone();
         let tp = transport_pref.to_string();
         tokio::spawn(async move {
             let result = lan_initiator(&scope, &mc, &mut response, &mut ack, &key, &sid, &tp, &self_nonces, &punch_port, passive).await;
             let _ = result_tx.send(result).await;
-            let _ = stop;
         });
     }
     // responder
@@ -330,7 +326,6 @@ pub async fn lan_discover(
         tokio::spawn(async move {
             let result = lan_responder(&scope, &mc, &mut beacon, &mut confirm, &key, &sid, &tp, &self_nonces, &punch_port).await;
             let _ = result_tx.send(result).await;
-            let _ = resp_stop;
         });
     }
     drop(result_tx);

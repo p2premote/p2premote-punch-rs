@@ -66,9 +66,15 @@ fn handle_start_udp_tunnel_json(input: &str) -> String {
             return encode_tunnel_result(&result);
         }
     };
-    let timeout_secs = if req.timeout_secs <= 0 { 45 } else { req.timeout_secs };
-    // Go: ctx deadline = timeout + 10s.
-    let deadline = std::time::Duration::from_secs(timeout_secs as u64 + 10);
+    // Go: ctx deadline = timeout + 10s. The `timeout_secs <= 0` default is
+    // owned by start_udp_tunnel; this deadline only adds the +10s margin and
+    // must never undercut that floor (max()), so every path keeps the same
+    // effective scope (min(deadline, effective timeout)).
+    let deadline = std::time::Duration::from_secs(
+        req.timeout_secs
+            .max(easyp2p::udp_tunnel::DEFAULT_TUNNEL_TIMEOUT_SECS) as u64
+            + 10,
+    );
 
     match runtime::block_on(easyp2p::udp_tunnel::start_udp_tunnel(req, deadline)) {
         Ok(tunnel) => {
@@ -325,7 +331,6 @@ fn handle_windows_wg_peer_allowed_json(input: &str) -> String {
 //   1 = waitOnly passive side step 1: only receive, no broadcast
 //   2 = reply    passive side step 2: broadcast sendData + receive confirmation
 
-#[cfg(feature = "ffi")]
 const WGVPN_EXCHANGE_TOPIC_SALT: &str = "wgvpn-kx/";
 
 #[cfg(feature = "ffi")]
@@ -442,7 +447,7 @@ pub mod api {
             request.exmode,
             &request.send_data,
             &request.token,
-            "wgvpn-kx/",
+            super::WGVPN_EXCHANGE_TOPIC_SALT,
             timeout,
             budget,
         )
@@ -506,7 +511,6 @@ mod native_api_tests {
 
 // ============ exported C ABI ============
 
-#[cfg(feature = "ffi")]
 /// Panic-guarded FFI dispatcher: a Rust panic must never unwind across the
 /// C ABI (UB for the DLL host). Every JSON-in/JSON-out export goes through
 /// this wrapper.

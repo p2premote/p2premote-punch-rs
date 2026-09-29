@@ -479,7 +479,7 @@ pub async fn auto_p2p_tcp_nat_traversal(
         return Err(P2pError::msg("operation cancelled"));
     }
 
-    let is_client = candidates::select_role(p2p_info, "");
+    let is_client = candidates::select_role(p2p_info);
     let (same_nat, similar_lan) = candidates::compare_p2p_addresses(p2p_info);
     let mut info = p2p_info.clone();
     let mut remote_addr_s = info.remote_nat.clone();

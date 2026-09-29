@@ -45,7 +45,7 @@ pub struct StopTunnelInput {
     pub handle_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UdpTunnelResult {
     pub ok: bool,
@@ -81,30 +81,6 @@ pub struct UdpTunnelResult {
     pub attempts: i32,
     #[serde(skip_serializing_if = "is_empty_string")]
     pub error: String,
-}
-
-impl Default for UdpTunnelResult {
-    fn default() -> Self {
-        Self {
-            ok: false,
-            handle_id: String::new(),
-            local_forward_addr: String::new(),
-            local_forward_port: 0,
-            peer_endpoint: String::new(),
-            local_nat_type: String::new(),
-            remote_nat_type: String::new(),
-            network: String::new(),
-            selected_traversal: String::new(),
-            transport_mode: String::new(),
-            local_lan_addr: String::new(),
-            local_nat_addr: String::new(),
-            remote_lan_addr: String::new(),
-            remote_nat_addr: String::new(),
-            is_client: false,
-            attempts: 0,
-            error: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]

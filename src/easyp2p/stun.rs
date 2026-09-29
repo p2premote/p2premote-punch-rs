@@ -665,7 +665,6 @@ pub async fn get_public_ips(
         let spec_addr = spec.addr.clone();
         let spec_index = spec.index;
         tokio::spawn(async move {
-            let started = Instant::now();
             let send = |err: Option<String>, local: String, nat: String| StunResult {
                 index: spec_index,
                 network: network_name.clone(),
@@ -700,7 +699,6 @@ pub async fn get_public_ips(
                         .await;
                 }
             }
-            let _ = started;
         });
     }
     drop(tx);

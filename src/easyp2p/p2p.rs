@@ -11,7 +11,6 @@ use super::mqtt_signal::{self, MqttSignalSession};
 use super::punch_tcp;
 use super::punch_udp;
 use super::stun;
-use super::netx;
 use super::{P2pError, Result, Scope, CAP_CANONICAL_LAN_PROBE, CAP_LAN_PROBE, CAP_MULTI_EXIT_UDP_PUNCH, EXMODE_MUTUAL, TOPIC_DESC_SIGNAL};
 
 pub struct P2PSessionContext {
@@ -79,7 +78,7 @@ pub fn attempt_details(info: Option<&P2PAddressInfo>, sess_ctx: Option<&P2PSessi
                 remote_nat_type: info.remote_nat_type.clone(),
                 ..Default::default()
             };
-            candidates::select_role(&probe, "")
+            candidates::select_role(&probe)
         }
         None => false,
     };
@@ -358,13 +357,8 @@ pub async fn easy_p2p_mp_with_options(
 
     crate::p2plog!("=== Checking NAT reachability ===");
 
-    let local_bind_ip = if options.bind.is_empty() {
-        String::new()
-    } else {
-        netx::split_host_port(&options.bind).map(|(h, _)| h).unwrap_or_default()
-    };
     let client_id = crypto::mqtt_generate_client_id(TOPIC_DESC_SIGNAL, session_uid);
-    let signal = MqttSignalSession::new(scope, &client_id, &local_bind_ip)
+    let signal = MqttSignalSession::new(scope, &client_id)
         .await
         .map_err(|e| P2pError::msg(format!("failed to prepare MQTT signal session: {}", e)))?;
 

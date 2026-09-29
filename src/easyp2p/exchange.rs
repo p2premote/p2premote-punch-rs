@@ -26,7 +26,7 @@ pub async fn mqtt_exchange_payload(
     let topic_salt = format!("{}{}", salt_prefix, crypto::derive_key_for_topic(salt_prefix, session_uid));
     let client_id = crypto::mqtt_generate_client_id("WG", session_uid);
     let scope = Scope::from_timeout(budget);
-    let signal = MqttSignalSession::new(&scope, &client_id, "").await?;
+    let signal = MqttSignalSession::new(&scope, &client_id).await?;
 
     if exmode == EXMODE_PUBLISH_ONLY {
         // Legacy reply mode: wait for the active peer's repeated payload, then

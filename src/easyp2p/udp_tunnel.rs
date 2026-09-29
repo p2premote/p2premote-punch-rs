@@ -33,6 +33,10 @@ pub const TRAVERSAL_MODE_AUTO: &str = "auto";
 pub const TRAVERSAL_MODE_INTERNET: &str = "internet";
 pub const TRAVERSAL_MODE_LAN: &str = "lan";
 
+/// Default tunnel timeout when the request has `timeout_secs <= 0`.
+/// Single source of the default: callers only add scheduling margins on top.
+pub const DEFAULT_TUNNEL_TIMEOUT_SECS: i32 = 45;
+
 const SELECTED_TRAVERSAL_INTERNET: &str = "internet";
 const SELECTED_TRAVERSAL_LAN: &str = "lan";
 const TRANSPORT_MODE_PLAIN: &str = "plain";
@@ -150,7 +154,7 @@ async fn exchange_role_payload<T: Serialize + serde::de::DeserializeOwned + 'sta
     timeout: Duration,
 ) -> Result<T, P2pError> {
     let client_id = crypto::mqtt_generate_client_id("WT", token);
-    let signal = MqttSignalSession::new(scope, &client_id, "").await?;
+    let signal = MqttSignalSession::new(scope, &client_id).await?;
 
     if role_hint == "active" {
         let (remote, _) = mqtt_signal::secure_exchange_with_session::<T>(
@@ -203,7 +207,7 @@ async fn coordinate_traversal_mode(
     {
         Ok(remote) => remote,
         Err(err) => {
-            if traversal_mode == TRAVERSAL_MODE_AUTO || traversal_mode == TRAVERSAL_MODE_INTERNET {
+            if traversal_mode == TRAVERSAL_MODE_AUTO {
                 crate::p2plog!(
                     "UDP tunnel capability exchange unavailable: {}; using secure Internet P2P for compatibility",
                     err
@@ -420,7 +424,7 @@ pub async fn start_udp_tunnel(req: UdpTunnelInput, budget: Duration) -> Result<S
     if req.remote_target_port <= 0 || req.remote_target_port > 65535 {
         return Err(StartError::plain(format!("invalid remote_target_port: {}", req.remote_target_port)));
     }
-    let timeout_secs = if req.timeout_secs <= 0 { 45 } else { req.timeout_secs };
+    let timeout_secs = if req.timeout_secs <= 0 { DEFAULT_TUNNEL_TIMEOUT_SECS } else { req.timeout_secs };
     let scope = Scope::from_timeout(budget.min(Duration::from_secs(timeout_secs as u64)));
 
     let (conn_info, attempt, decision) = establish_udp_tunnel_p2p(

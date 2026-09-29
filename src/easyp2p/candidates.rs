@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use super::netx;
 
 /// PunchingAddressInfo goes over the wire inside exchangeAddressPayload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PunchingAddressInfo {
     #[serde(rename = "network", default)]
     pub network: String,
@@ -19,17 +19,6 @@ pub struct PunchingAddressInfo {
     pub lan: String,
     #[serde(rename = "nat", default)]
     pub nat: String,
-}
-
-impl Default for PunchingAddressInfo {
-    fn default() -> Self {
-        PunchingAddressInfo {
-            network: String::new(),
-            nat_type: String::new(),
-            lan: String::new(),
-            nat: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -352,7 +341,7 @@ pub fn select_lan_probe_candidate(
 
 // ============ role & priorities ============
 
-pub fn select_role(info: &P2PAddressInfo, local_md5_seed: &str) -> bool {
+pub fn select_role(info: &P2PAddressInfo) -> bool {
     // ROLE_DEBUG env parity.
     match std::env::var("ROLE_DEBUG").as_deref() {
         Ok("C") => return true,
@@ -376,7 +365,6 @@ pub fn select_role(info: &P2PAddressInfo, local_md5_seed: &str) -> bool {
     // sides compute the same two hashes, so the comparison is symmetric.
     let a = super::crypto::calculate_md5(&format!("{}{}", info.local_lan, info.local_nat));
     let b = super::crypto::calculate_md5(&format!("{}{}", info.remote_lan, info.remote_nat));
-    let _ = local_md5_seed;
     a <= b
 }
 

@@ -103,16 +103,17 @@ fn random_tid(len: usize) -> String {
 
 /// MqttWaitSession: wait for "SYN@<tid>" and ACK it on the broker it arrived
 /// on. The returned session stays open for the caller to reuse as the P2P
-/// signaling session.
+/// signaling session. `_local_ip` is a gonc-parity placeholder: rumqttc
+/// cannot bind the MQTT source address.
 pub async fn mqtt_wait_session(
     scope: &Scope,
     session_uid: &str,
-    local_ip: &str,
+    _local_ip: &str,
     timeout: Duration,
 ) -> Result<(String, Arc<MqttSignalSession>)> {
     let topic_salt = wake_topic_salt(session_uid);
     let client_id = crypto::mqtt_generate_client_id(TOPIC_DESC_SIGNAL, session_uid);
-    let signal = MqttSignalSession::new(scope, &client_id, local_ip).await?;
+    let signal = MqttSignalSession::new(scope, &client_id).await?;
 
     let filter: Arc<dyn Fn(&String) -> std::result::Result<bool, String> + Send + Sync> =
         Arc::new(|data: &String| Ok(data.starts_with("SYN@")));
@@ -161,13 +162,13 @@ pub async fn mqtt_wait_session(
 pub async fn mqtt_hello_session(
     scope: &Scope,
     session_uid: &str,
-    local_ip: &str,
+    _local_ip: &str,
     hello_payload: &HelloPayload,
     timeout: Duration,
 ) -> Result<(String, Arc<MqttSignalSession>)> {
     let topic_salt = wake_topic_salt(session_uid);
     let client_id = crypto::mqtt_generate_client_id(TOPIC_DESC_SIGNAL, session_uid);
-    let signal = MqttSignalSession::new(scope, &client_id, local_ip).await?;
+    let signal = MqttSignalSession::new(scope, &client_id).await?;
 
     let tid = format!("{}{}", random_tid(10), hello_payload.to_suffix());
     let msg_syn = format!("SYN@{}", tid);
