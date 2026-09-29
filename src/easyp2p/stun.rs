@@ -507,33 +507,33 @@ async fn dial_stun_conn(
             let (tx, rx) = mpsc::channel::<(usize, Vec<u8>)>(100);
             let winner = Arc::new(AtomicUsize::new(NO_WINNER));
             let mut remotes = Vec::new();
+            let mut conns = Vec::new();
             let mut local = local_any();
             for target_port in std::iter::once(port_str.as_str()).chain(extra_ports.iter().copied()) {
                 if let Ok(addr) = resolve_stun_target(&host, target_port, is_ipv6).await {
                     if let Ok(conn) = mux.connect(addr).await {
                         local = conn.local_addr();
                         remotes.push(addr);
+                        conns.push(conn);
                     }
                 }
             }
             if remotes.is_empty() {
                 return Err("all udp dials failed".to_string());
             }
-            // One forwarder task per port: first data wins (RaceConn).
-            for target_port in std::iter::once(port_str.as_str()).chain(extra_ports.iter().copied()) {
-                if let Ok(addr) = resolve_stun_target(&host, target_port, is_ipv6).await {
-                    if let Ok(mut conn) = mux.connect(addr).await {
-                        let index = remotes.iter().position(|r| *r == addr).unwrap_or(0);
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            while let Some(data) = conn.recv().await {
-                                if tx.send((index, data)).await.is_err() {
-                                    return;
-                                }
-                            }
-                        });
+            // One forwarder task per port: first data wins (RaceConn). The
+            // connections come from the resolve pass above, so each remote's
+            // forwarder carries the exact index and no duplicate resolve or
+            // route entry is created.
+            for (index, mut conn) in conns.into_iter().enumerate() {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    while let Some(data) = conn.recv().await {
+                        if tx.send((index, data)).await.is_err() {
+                            return;
+                        }
                     }
-                }
+                });
             }
             drop(tx);
             Ok(StunConn {
