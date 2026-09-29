@@ -372,7 +372,9 @@ pub async fn easy_p2p_mp_with_options(
         &signal,
     )
     .await
-    .map_err(|e| P2pError::msg(format!("failed to exchange address info: {}", e)))?;
+    .map_err(|e| {
+        P2pError::msg(format!("failed to exchange address info: {}", e)).at_exchange_stage()
+    })?;
 
     if scope.expired() {
         return Err(P2pError::msg("operation cancelled"));

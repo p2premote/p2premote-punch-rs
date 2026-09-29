@@ -110,6 +110,18 @@ pub const EXMODE_PUBLISH_ONLY: i32 = 2;
 
 // ============ errors ============
 
+/// Traversal stage an error originated from. Internal diagnostics only:
+/// never rendered into any message and never serialized, so the FFI/JSON
+/// error strings stay byte-identical regardless of this marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ErrorStage {
+    #[default]
+    Unknown,
+    /// Escaped while exchanging address info with the peer (before any
+    /// candidate probing started).
+    Exchange,
+}
+
 /// Error with optional traversal diagnostics, mirroring P2PTraversalError /
 /// UnRetryableError from easyp2p/p2p.go.
 #[derive(Debug, Clone)]
@@ -117,6 +129,7 @@ pub struct P2pError {
     message: String,
     unretryable: bool,
     details: Option<candidates::P2PAttemptDetails>,
+    stage: ErrorStage,
 }
 
 impl P2pError {
@@ -125,6 +138,7 @@ impl P2pError {
             message: message.into(),
             unretryable: false,
             details: None,
+            stage: ErrorStage::Unknown,
         }
     }
 
@@ -138,6 +152,16 @@ impl P2pError {
         let mut e = self;
         e.details = Some(details);
         e
+    }
+
+    /// Tag this error as originating from the address-exchange stage.
+    pub(crate) fn at_exchange_stage(mut self) -> Self {
+        self.stage = ErrorStage::Exchange;
+        self
+    }
+
+    pub(crate) fn stage(&self) -> ErrorStage {
+        self.stage
     }
 
     pub fn is_unretryable(&self) -> bool {
@@ -331,4 +355,32 @@ macro_rules! p2plog {
             $crate::easyp2p::p2p_diag_line(&format!($($arg)*));
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exchange_stage_marker_does_not_leak_into_the_message() {
+        let err = P2pError::msg(format!(
+            "failed to exchange address info: {}",
+            P2pError::msg("timeout waiting for remote data exchange on topic x")
+        ))
+        .at_exchange_stage();
+        assert_eq!(err.stage(), ErrorStage::Exchange);
+        assert_eq!(
+            err.to_string(),
+            "failed to exchange address info: timeout waiting for remote data exchange on topic x"
+        );
+        // Wrap-on/wrap-off helpers must preserve the marker.
+        assert_eq!(
+            err.clone().wrap_unretryable().stage(),
+            ErrorStage::Exchange
+        );
+        assert_eq!(
+            P2pError::msg("plain failure").stage(),
+            ErrorStage::Unknown
+        );
+    }
 }

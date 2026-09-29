@@ -241,7 +241,7 @@ async fn establish_internet_udp_p2p(
     // succeeded in ANY attempt, the real blocker is the P2P probing stage —
     // later attempts usually fail back at the exchange because the peer has
     // moved on to probing and stopped republishing, so the LAST error would
-    // misleadingly blame "exchange address info".
+    // misleadingly blame the exchange stage.
     let mut exchange_ok_attempt: i32 = 0;
     let mut probe_error: Option<P2pError> = None;
     loop {
@@ -258,16 +258,17 @@ async fn establish_internet_udp_p2p(
         {
             Ok(conn_info) => return (Some(conn_info), attempt, None),
             Err(err) => {
+                let failed_at_exchange = err.stage() == super::ErrorStage::Exchange;
                 crate::p2pevent!(
                     "p2p tunnel attempt failed: attempt={}, network={}, exchange_succeeded={}, deadline_expired={}, remaining_ms={}, error={}",
                     attempt,
                     network,
-                    !err.message.contains("exchange address info"),
+                    !failed_at_exchange,
                     scope.expired(),
                     scope.remaining().as_millis(),
                     err
                 );
-                if err.message.contains("exchange address info") {
+                if failed_at_exchange {
                     // peer addresses already obtained earlier → probing stage.
                 } else {
                     exchange_ok_attempt = attempt;
