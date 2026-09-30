@@ -1,11 +1,25 @@
-//! Port of punchffi/subnet_router_backend.go: Linux subnet router =
-//! ip_forward sysctl + ref-counted iptables chains (P2PREMOTE-FWD /
-//! P2PREMOTE-NAT with per-session MASQUERADE rules).
+//! Linux subnet router backend (p2premote extension — gonc upstream has no
+//! subnet-routing code, so this file is not bound by the line-by-line port
+//! discipline; simplified 2026-09-30 with maintainer approval).
+//!
+//! Set-diff reconcile against the session table:
+//! - The session table (`SUBNET_ROUTERS`) is the source of truth. Every
+//!   start/stop compares the rule sets derived from the old and new session
+//!   lists and applies only the difference — rules needed by surviving
+//!   sessions are never touched, so concurrent sessions are not interrupted.
+//! - Crash recovery: the first start in a process lifetime flushes both
+//!   custom chains first. That flag is only ever set while the table is
+//!   empty (fresh process or completed teardown), so the flush can never
+//!   disturb live sessions.
+//! - ip_forward is enabled on start and deliberately never restored to its
+//!   previous value (maintainer decision 2026-09-30); rp_filter is still
+//!   preflighted because rp_filter=1 breaks routed WireGuard traffic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::process::Command;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::types::{StartSubnetRouterInput, SubnetRouterResult};
 
@@ -58,34 +72,28 @@ fn run_command(name: &str, args: &[&str]) -> std::result::Result<(), String> {
     run_output(name, args).map(|_| ())
 }
 
-// ============ global router state ============
-
-struct LinuxRouterState {
-    sessions: usize,
-    ip_forward_original: String,
-    ip_forward_changed: bool,
-    rules: HashMap<String, usize>,
-}
-
-impl LinuxRouterState {
-    fn new() -> Self {
-        LinuxRouterState {
-            sessions: 0,
-            ip_forward_original: String::new(),
-            ip_forward_changed: false,
-            rules: HashMap::new(),
-        }
-    }
-}
-
-static LINUX_ROUTER_STATE: Mutex<Option<LinuxRouterState>> = Mutex::new(None);
+// ============ session table ============
 
 struct SubnetRouterHandle {
     result: SubnetRouterResult,
-    stop_rules: Vec<IptablesRule>,
+    /// Session identity/config — the desired state rules are derived from.
+    req: StartSubnetRouterInput,
 }
 
 static SUBNET_ROUTERS: Mutex<Option<HashMap<String, SubnetRouterHandle>>> = Mutex::new(None);
+
+/// True while the chains may hold rules this process does not track (fresh
+/// process, or a teardown that may have failed). The next start flushes the
+/// chains once and clears the flag; it is never true alongside live sessions.
+static CHAINS_UNTRACKED: AtomicBool = AtomicBool::new(true);
+
+/// Rules of already-tracked sessions. Each was validated at its own start,
+/// so failures here are impossible; skipping on error keeps set math sane.
+fn tracked_session_rules(map: &HashMap<String, SubnetRouterHandle>) -> Vec<IptablesRule> {
+    map.values()
+        .flat_map(|handle| linux_session_rules(&handle.req).unwrap_or_default())
+        .collect()
+}
 
 // ============ platform dispatch ============
 
@@ -111,15 +119,42 @@ pub fn start_subnet_router(req: StartSubnetRouterInput) -> SubnetRouterResult {
 }
 
 pub fn stop_subnet_router(handle_id: &str) -> SubnetRouterResult {
-    let handle = {
-        let mut guard = SUBNET_ROUTERS.lock().unwrap();
-        guard.as_mut().and_then(|map| map.remove(handle_id))
+    let mut guard = SUBNET_ROUTERS.lock().unwrap();
+    let Some(map) = guard.as_mut() else {
+        return SubnetRouterResult {
+            ok: true,
+            ..Default::default()
+        };
     };
-    if let Some(handle) = handle {
-        if cfg!(target_os = "linux") {
-            release_linux_subnet_router(&handle.stop_rules);
+    let removed = match map.remove(handle_id) {
+        Some(handle) => handle,
+        None => {
+            return SubnetRouterResult {
+                ok: true,
+                ..Default::default()
+            };
         }
+    };
+    if !cfg!(target_os = "linux") {
+        return SubnetRouterResult {
+            ok: true,
+            ..Default::default()
+        };
     }
+    if map.is_empty() {
+        teardown_linux_router();
+        return SubnetRouterResult {
+            ok: true,
+            ..Default::default()
+        };
+    }
+    // Diff old set (survivors + removed) against new set (survivors only):
+    // exactly the removed session's non-shared rules are deleted and nothing
+    // else is touched, so surviving sessions are not interrupted.
+    let mut old_rules = tracked_session_rules(map);
+    old_rules.extend(linux_session_rules(&removed.req).unwrap_or_default());
+    let new_rules = tracked_session_rules(map);
+    let _ = apply_rule_diff(&old_rules, &new_rules);
     SubnetRouterResult {
         ok: true,
         ..Default::default()
@@ -141,14 +176,22 @@ pub fn get_subnet_router_status(handle_id: &str) -> SubnetRouterResult {
 // ============ Linux backend ============
 
 fn start_linux_subnet_router(req: StartSubnetRouterInput) -> SubnetRouterResult {
-    let rules = match acquire_linux_subnet_router(&req) {
+    // Validate before touching the host so malformed input leaves no partial rules.
+    if req.peer_tail_ip.parse::<IpAddr>().is_err() {
+        return SubnetRouterResult {
+            ok: false,
+            error: format!("invalid peer_tail_ip: {}", req.peer_tail_ip),
+            ..Default::default()
+        };
+    }
+    let new_session_rules = match linux_session_rules(&req) {
         Ok(rules) => rules,
         Err(err) => {
             return SubnetRouterResult {
                 ok: false,
                 error: err,
                 ..Default::default()
-            }
+            };
         }
     };
     let handle_id = format!("subnet-{}", crate::runtime::now_unix_nanos());
@@ -163,11 +206,43 @@ fn start_linux_subnet_router(req: StartSubnetRouterInput) -> SubnetRouterResult 
         ..Default::default()
     };
     let mut guard = SUBNET_ROUTERS.lock().unwrap();
-    guard.get_or_insert_with(HashMap::new).insert(
+    let map = guard.get_or_insert_with(HashMap::new);
+    let first_session = map.is_empty();
+    let old_rules = tracked_session_rules(map);
+    let mut new_rules = old_rules.clone();
+    new_rules.extend(new_session_rules);
+    // First start in this process: rules left by a crashed previous process
+    // cannot be in old_rules, so flush the chains and start from scratch.
+    // The flag is only ever set while the table is empty, so no live session
+    // can be affected by this flush.
+    if CHAINS_UNTRACKED.swap(false, Ordering::SeqCst) {
+        let _ = run_command("iptables", &["-F", LINUX_FORWARD_CHAIN]);
+        let _ = run_command("iptables", &["-t", "nat", "-F", LINUX_NAT_CHAIN]);
+    }
+    // Prepare (chains + jumps + sysctl) runs only on the empty→non-empty
+    // transition, like the old sessions==0 gate: a failure here tears down
+    // with the table guaranteed empty, so it can never disturb live sessions.
+    if first_session {
+        if let Err(err) = prepare_linux_router() {
+            return SubnetRouterResult {
+                ok: false,
+                error: err,
+                ..Default::default()
+            };
+        }
+    }
+    if let Err(err) = apply_rule_diff(&old_rules, &new_rules) {
+        return SubnetRouterResult {
+            ok: false,
+            error: err,
+            ..Default::default()
+        };
+    }
+    map.insert(
         handle_id,
         SubnetRouterHandle {
             result: result.clone(),
-            stop_rules: rules,
+            req,
         },
     );
     result
@@ -231,13 +306,46 @@ fn linux_session_rules(req: &StartSubnetRouterInput) -> std::result::Result<Vec<
     Ok(out)
 }
 
+/// Set difference of rule lists keyed by exact identity. Sessions sharing a
+/// rule collapse to one entry, which is what makes stopping one of them leave
+/// the shared rule alone — set semantics replace the old refcount table.
+fn rule_diff(old: &[IptablesRule], new: &[IptablesRule]) -> (Vec<IptablesRule>, Vec<IptablesRule>) {
+    let old_keys: HashSet<String> = old.iter().map(rule_key).collect();
+    let new_keys: HashSet<String> = new.iter().map(rule_key).collect();
+    let adds = new
+        .iter()
+        .filter(|rule| !old_keys.contains(&rule_key(rule)))
+        .cloned()
+        .collect();
+    let removes = old
+        .iter()
+        .filter(|rule| !new_keys.contains(&rule_key(rule)))
+        .cloned()
+        .collect();
+    (adds, removes)
+}
+
+/// Adds are strict (a failed install means the session is not served and the
+/// caller reports the error); removes are best-effort like the old release
+/// path — a leftover is cleaned by the next first-start flush.
+fn apply_rule_diff(old: &[IptablesRule], new: &[IptablesRule]) -> std::result::Result<(), String> {
+    let (adds, removes) = rule_diff(old, new);
+    for rule in &adds {
+        ensure_iptables_rule(rule)?;
+    }
+    for rule in &removes {
+        let _ = delete_iptables_rule(rule);
+    }
+    Ok(())
+}
+
 fn ensure_iptables_rule(rule: &IptablesRule) -> std::result::Result<(), String> {
     let check = build_iptables_args("-C", rule);
     let check_refs: Vec<&str> = check.iter().map(|s| s.as_str()).collect();
     if run_command("iptables", &check_refs).is_ok() {
         return Ok(());
     }
-    let append = build_iptables_args("-A", rule);
+    let append = build_iptables_args("-A", &rule);
     let append_refs: Vec<&str> = append.iter().map(|s| s.as_str()).collect();
     run_command("iptables", &append_refs)
         .map_err(|e| format!("install iptables rule failed: {}", e))
@@ -262,7 +370,7 @@ fn delete_iptables_rule(rule: &IptablesRule) -> std::result::Result<(), String> 
     run_command("iptables", &refs)
 }
 
-fn prepare_linux_router(state: &mut LinuxRouterState) -> std::result::Result<(), String> {
+fn prepare_linux_router() -> std::result::Result<(), String> {
     for key in ["net.ipv4.conf.all.rp_filter", "net.ipv4.conf.default.rp_filter"] {
         let rp_filter = run_output("sysctl", &["-n", key])
             .map_err(|e| format!("read {} failed: {}", key, e))?;
@@ -270,14 +378,9 @@ fn prepare_linux_router(state: &mut LinuxRouterState) -> std::result::Result<(),
             return Err(format!("{}=1 blocks routed WireGuard traffic; set it to 0 or 2", key));
         }
     }
-    let ip_forward = run_output("sysctl", &["-n", "net.ipv4.ip_forward"])
-        .map_err(|e| format!("read net.ipv4.ip_forward failed: {}", e))?;
-    state.ip_forward_original = ip_forward.trim().to_string();
-    if state.ip_forward_original != "1" {
-        run_command("sysctl", &["-w", "net.ipv4.ip_forward=1"])
-            .map_err(|e| format!("enable ip_forward failed: {}", e))?;
-        state.ip_forward_changed = true;
-    }
+    // Enable-only by design: the previous value is neither recorded nor restored.
+    run_command("sysctl", &["-w", "net.ipv4.ip_forward=1"])
+        .map_err(|e| format!("enable ip_forward failed: {}", e))?;
     for (table, name, parent) in [("", LINUX_FORWARD_CHAIN, "FORWARD"), ("nat", LINUX_NAT_CHAIN, "POSTROUTING")] {
         let mut create_args: Vec<&str> = Vec::new();
         if !table.is_empty() {
@@ -295,14 +398,14 @@ fn prepare_linux_router(state: &mut LinuxRouterState) -> std::result::Result<(),
             ],
         };
         if let Err(err) = insert_iptables_rule(&jump) {
-            teardown_linux_router(state);
+            teardown_linux_router();
             return Err(err);
         }
     }
     Ok(())
 }
 
-fn teardown_linux_router(state: &mut LinuxRouterState) {
+fn teardown_linux_router() {
     for jump in [
         IptablesRule {
             table: String::new(),
@@ -327,75 +430,24 @@ fn teardown_linux_router(state: &mut LinuxRouterState) {
     let _ = run_command("iptables", &["-X", LINUX_FORWARD_CHAIN]);
     let _ = run_command("iptables", &["-t", "nat", "-F", LINUX_NAT_CHAIN]);
     let _ = run_command("iptables", &["-t", "nat", "-X", LINUX_NAT_CHAIN]);
-    if state.ip_forward_changed {
-        let restore = format!("net.ipv4.ip_forward={}", state.ip_forward_original);
-        let _ = run_command("sysctl", &["-w", &restore]);
-    }
-    state.ip_forward_changed = false;
-    state.ip_forward_original = String::new();
-}
-
-fn acquire_linux_subnet_router(req: &StartSubnetRouterInput) -> std::result::Result<Vec<IptablesRule>, String> {
-    if req.peer_tail_ip.parse::<IpAddr>().is_err() {
-        return Err(format!("invalid peer_tail_ip: {}", req.peer_tail_ip));
-    }
-    let rules = linux_session_rules(req)?;
-    let mut guard = LINUX_ROUTER_STATE.lock().unwrap();
-    let state = guard.get_or_insert_with(LinuxRouterState::new);
-    if state.sessions == 0 {
-        prepare_linux_router(state)?;
-    }
-    let mut acquired: Vec<IptablesRule> = Vec::with_capacity(rules.len());
-    for rule in rules {
-        let key = rule_key(&rule);
-        if state.rules.get(&key).copied().unwrap_or(0) == 0 {
-            if let Err(err) = ensure_iptables_rule(&rule) {
-                for acquired_rule in acquired.iter().rev() {
-                    release_linux_rule(state, acquired_rule);
-                }
-                if state.sessions == 0 {
-                    teardown_linux_router(state);
-                }
-                return Err(err);
-            }
-        }
-        *state.rules.entry(key).or_insert(0) += 1;
-        acquired.push(rule);
-    }
-    state.sessions += 1;
-    Ok(acquired)
-}
-
-fn release_linux_subnet_router(rules: &[IptablesRule]) {
-    let mut guard = LINUX_ROUTER_STATE.lock().unwrap();
-    let state = guard.get_or_insert_with(LinuxRouterState::new);
-    for rule in rules.iter().rev() {
-        release_linux_rule(state, rule);
-    }
-    if state.sessions > 0 {
-        state.sessions -= 1;
-    }
-    if state.sessions == 0 {
-        teardown_linux_router(state);
-    }
-}
-
-fn release_linux_rule(state: &mut LinuxRouterState, rule: &IptablesRule) {
-    let key = rule_key(rule);
-    let count = state.rules.get(&key).copied().unwrap_or(0);
-    if count <= 1 {
-        if count == 1 {
-            let _ = delete_iptables_rule(rule);
-        }
-        state.rules.remove(&key);
-    } else {
-        state.rules.insert(key, count - 1);
-    }
+    // ip_forward stays as-is: enable-only by maintainer decision. Mark the
+    // chains untracked so a failed cleanup is retried by the next start.
+    CHAINS_UNTRACKED.store(true, Ordering::SeqCst);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session(peer: &str, cidr: &str) -> StartSubnetRouterInput {
+        StartSubnetRouterInput {
+            session_id: 59,
+            peer_device_id: 58,
+            peer_tail_ip: peer.into(),
+            exposed_lan_cidrs: vec![cidr.into()],
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn build_iptables_args_matches_go() {
@@ -440,5 +492,43 @@ mod tests {
             ..Default::default()
         };
         assert!(linux_session_rules(&req).is_err());
+    }
+
+    #[test]
+    fn stopping_one_session_only_removes_its_rules() {
+        let a = linux_session_rules(&session("100.99.71.2", "192.168.10.0/24")).unwrap();
+        let b = linux_session_rules(&session("100.99.71.3", "192.168.10.0/24")).unwrap();
+        let old: Vec<IptablesRule> = a.iter().chain(b.iter()).cloned().collect();
+        let (adds, removes) = rule_diff(&old, &a);
+        assert!(adds.is_empty());
+        assert_eq!(removes.len(), b.len());
+        let remove_keys: HashSet<String> = removes.iter().map(rule_key).collect();
+        for rule in &b {
+            assert!(remove_keys.contains(&rule_key(rule)));
+        }
+        for rule in a.iter() {
+            assert!(!remove_keys.contains(&rule_key(rule)));
+        }
+    }
+
+    #[test]
+    fn shared_rules_survive_when_one_sharing_session_stops() {
+        // Two identical sessions collapse to one rule set; stopping either
+        // leaves the shared rules in place (set semantics, no refcounting).
+        let rule_set = linux_session_rules(&session("100.99.71.2", "192.168.10.0/24")).unwrap();
+        let old: Vec<IptablesRule> = rule_set.iter().chain(rule_set.iter()).cloned().collect();
+        let (adds, removes) = rule_diff(&old, &rule_set);
+        assert!(adds.is_empty());
+        assert!(removes.is_empty());
+    }
+
+    #[test]
+    fn starting_a_session_only_adds_its_rules() {
+        let a = linux_session_rules(&session("100.99.71.2", "192.168.10.0/24")).unwrap();
+        let b = linux_session_rules(&session("100.99.71.3", "10.10.0.0/16")).unwrap();
+        let new: Vec<IptablesRule> = a.iter().chain(b.iter()).cloned().collect();
+        let (adds, removes) = rule_diff(&a, &new);
+        assert!(removes.is_empty());
+        assert_eq!(adds.len(), b.len());
     }
 }
