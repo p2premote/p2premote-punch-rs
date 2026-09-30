@@ -165,23 +165,6 @@ fn keypair_reports_platform_support_state() {
 }
 
 #[test]
-fn userspace_wg_aliases_match_windows_named_exports() {
-    for (userspace, windows) in [
-        (StartUserspaceWgPeer as unsafe extern "C" fn(*const c_char) -> *mut c_char, StartWindowsWgPeer as unsafe extern "C" fn(*const c_char) -> *mut c_char),
-        (StopUserspaceWgPeer, StopWindowsWgPeer),
-        (GetUserspaceWgPeerStatus, GetWindowsWgPeerStatus),
-        (SetUserspaceWgPeerAllowed, SetWindowsWgPeerAllowed),
-        (StopUserspaceWgEngine, StopWindowsWgEngine),
-        (CleanupUserspaceWgPlatform, CleanupWindowsWgPlatform),
-    ] {
-        let a = call(userspace, r#"{"handle_id":"h","session_id":1,"peer_device_id":1}"#);
-        let b = call(windows, r#"{"handle_id":"h","session_id":1,"peer_device_id":1}"#);
-        assert_eq!(a, b);
-        assert!(!json_bool(&a, "ok"));
-    }
-}
-
-#[test]
 fn exchange_validation() {
     let raw = call(Exchange, r#"{"send_data":"x"}"#);
     assert!(!json_bool(&raw, "ok"));

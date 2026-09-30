@@ -583,77 +583,38 @@ pub extern "C" fn GenerateWgKeypair(_input: *const c_char) -> *mut c_char {
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
-pub extern "C" fn StartWindowsWgPeer(input: *const c_char) -> *mut c_char {
+pub extern "C" fn StartUserspaceWgPeer(input: *const c_char) -> *mut c_char {
     ffi_guard(input, handle_start_windows_wg_peer_json)
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
-pub extern "C" fn StopWindowsWgPeer(input: *const c_char) -> *mut c_char {
+pub extern "C" fn StopUserspaceWgPeer(input: *const c_char) -> *mut c_char {
     ffi_guard(input, |s| handle_windows_wg_peer_json(s, platform::stop_userspace_wg_peer))
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
-pub extern "C" fn GetWindowsWgPeerStatus(input: *const c_char) -> *mut c_char {
+pub extern "C" fn GetUserspaceWgPeerStatus(input: *const c_char) -> *mut c_char {
     ffi_guard(input, |s| handle_windows_wg_peer_json(s, platform::get_userspace_wg_peer_status))
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
-pub extern "C" fn SetWindowsWgPeerAllowed(input: *const c_char) -> *mut c_char {
+pub extern "C" fn SetUserspaceWgPeerAllowed(input: *const c_char) -> *mut c_char {
     ffi_guard(input, handle_windows_wg_peer_allowed_json)
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
-pub extern "C" fn StopWindowsWgEngine(_input: *const c_char) -> *mut c_char {
+pub extern "C" fn StopUserspaceWgEngine(_input: *const c_char) -> *mut c_char {
     ffi_guard_body(|| encode_json(&platform::stop_userspace_wg_engine()))
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
-pub extern "C" fn CleanupWindowsWgPlatform(_input: *const c_char) -> *mut c_char {
+pub extern "C" fn CleanupUserspaceWgPlatform(_input: *const c_char) -> *mut c_char {
     ffi_guard_body(|| encode_json(&platform::cleanup_userspace_wg_platform()))
-}
-
-// Generic userspace-WG ABI v2. The Windows-named exports above remain as
-// compatibility aliases (kept from the Go ABI).
-
-#[cfg(feature = "ffi")]
-#[no_mangle]
-pub extern "C" fn StartUserspaceWgPeer(input: *const c_char) -> *mut c_char {
-    StartWindowsWgPeer(input)
-}
-
-#[cfg(feature = "ffi")]
-#[no_mangle]
-pub extern "C" fn StopUserspaceWgPeer(input: *const c_char) -> *mut c_char {
-    StopWindowsWgPeer(input)
-}
-
-#[cfg(feature = "ffi")]
-#[no_mangle]
-pub extern "C" fn GetUserspaceWgPeerStatus(input: *const c_char) -> *mut c_char {
-    GetWindowsWgPeerStatus(input)
-}
-
-#[cfg(feature = "ffi")]
-#[no_mangle]
-pub extern "C" fn SetUserspaceWgPeerAllowed(input: *const c_char) -> *mut c_char {
-    SetWindowsWgPeerAllowed(input)
-}
-
-#[cfg(feature = "ffi")]
-#[no_mangle]
-pub extern "C" fn StopUserspaceWgEngine(input: *const c_char) -> *mut c_char {
-    StopWindowsWgEngine(input)
-}
-
-#[cfg(feature = "ffi")]
-#[no_mangle]
-pub extern "C" fn CleanupUserspaceWgPlatform(input: *const c_char) -> *mut c_char {
-    CleanupWindowsWgPlatform(input)
 }
 
 #[cfg(feature = "ffi")]

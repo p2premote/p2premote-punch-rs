@@ -17,7 +17,6 @@ extern char* GetUserspaceWgPeerStatus(char*);
 extern char* SetUserspaceWgPeerAllowed(char*);
 extern char* StopUserspaceWgEngine(char*);
 extern char* CleanupUserspaceWgPlatform(char*);
-extern char* StartWindowsWgPeer(char*);
 extern char* Exchange(char*);
 extern void FreeCString(char*);
 extern int P2PremotePunchRsAbiVersion(void);
@@ -73,10 +72,6 @@ int main(void) {
 
     r = StartUserspaceWgPeer("{\"handle_id\":\"h\",\"session_id\":1,\"peer_device_id\":1}");
     check("StartUserspaceWgPeer stub", r, "\"ok\":false");
-    FreeCString(r);
-
-    r = StartWindowsWgPeer("{\"handle_id\":\"h\",\"session_id\":1,\"peer_device_id\":1}");
-    check("StartWindowsWgPeer alias", r, "\"ok\":false");
     FreeCString(r);
 
     r = Exchange("{\"send_data\":\"x\"}");

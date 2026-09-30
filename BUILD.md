@@ -94,9 +94,9 @@ SetUserspaceWgPeerAllowed StopUserspaceWgEngine CleanupUserspaceWgPlatform
 Exchange FreeCString
 ```
 
-旧别名（ABI v1 兼容）：`StartWindowsWgPeer StopWindowsWgPeer
-GetWindowsWgPeerStatus SetWindowsWgPeerAllowed`。另有链接期冲突标记
-`P2PremotePunchRsAbiVersion`（返回 2）。
+旧别名（ABI v1 兼容）已于 2026-09-30 移除（审计 B-3）：desktop extern
+自 2026-09-02 起只声明 `Userspace*` 名称，`Windows*` 别名从未被任何
+构建消费。另有链接期冲突标记 `P2PremotePunchRsAbiVersion`（返回 2）。
 
 `GetWgCapabilities` 恒返回 `abi_version=2`。
 
