@@ -13,13 +13,21 @@ use super::*;
 #[ignore = "hits real STUN servers"]
 async fn stun_live_udp4() {
     let scope = Scope::from_timeout(Duration::from_secs(15));
-    let results = stun::get_networks_public_ips(&scope, &["udp4".to_string()], "", Duration::from_millis(2828))
-        .await
-        .expect("stun phase failed");
+    let results = stun::get_networks_public_ips(
+        &scope,
+        &["udp4".to_string()],
+        "",
+        Duration::from_millis(2828),
+    )
+    .await
+    .expect("stun phase failed");
     let ok = results.iter().filter(|r| r.err.is_none()).count();
     eprintln!("STUN results: {}/{} succeeded", ok, results.len());
     for r in &results {
-        eprintln!("  [{}] {} local={} nat={} err={:?}", r.index, r.network, r.local, r.nat, r.err);
+        eprintln!(
+            "  [{}] {} local={} nat={} err={:?}",
+            r.index, r.network, r.local, r.nat, r.err
+        );
     }
     assert!(ok > 0, "no STUN server answered");
     let analyzed = stun::analyze_stun_results(&results);
@@ -31,7 +39,10 @@ async fn stun_live_udp4() {
 #[tokio::test]
 #[ignore = "hits real MQTT brokers"]
 async fn exchange_rust_to_rust() {
-    let token = format!("rs-r2r-{}", &crypto::calculate_md5(&format!("{:?}", std::time::SystemTime::now()))[..8]);
+    let token = format!(
+        "rs-r2r-{}",
+        &crypto::calculate_md5(&format!("{:?}", std::time::SystemTime::now()))[..8]
+    );
     let active = tokio::spawn({
         let token = token.clone();
         async move {
@@ -132,7 +143,10 @@ async fn stun_live_v6() {
     let ok = results.iter().filter(|r| r.err.is_none()).count();
     eprintln!("STUN v6 results: {}/{} succeeded", ok, results.len());
     for r in &results {
-        eprintln!("  [{}] {} local={} nat={} err={:?}", r.index, r.network, r.local, r.nat, r.err);
+        eprintln!(
+            "  [{}] {} local={} nat={} err={:?}",
+            r.index, r.network, r.local, r.nat, r.err
+        );
     }
     assert!(ok > 0, "no v6 STUN server answered (no IPv6 connectivity?)");
 }
@@ -184,7 +198,9 @@ async fn tunnel_roundtrip_inner(network: &str, echo_port: u16, tolerate_hard_har
             );
             let c = std::ffi::CString::new(input).unwrap();
             let raw = crate::StartUdpTunnel(c.as_ptr());
-            let out = unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+            let out = unsafe { std::ffi::CStr::from_ptr(raw) }
+                .to_string_lossy()
+                .into_owned();
             crate::FreeCString(raw);
             let result: UdpTunnelResult = serde_json::from_str(&out).expect(out.as_str());
             (out, result)
@@ -194,13 +210,16 @@ async fn tunnel_roundtrip_inner(network: &str, echo_port: u16, tolerate_hard_har
     // Echo server on the active side's WireGuard port: replies ACK-*.
     let echo = tokio::spawn(async move {
         let bind_to = format!("127.0.0.1:{}", echo_port);
-        let socket = tokio::net::UdpSocket::bind(&bind_to).await.expect("bind echo port");
+        let socket = tokio::net::UdpSocket::bind(&bind_to)
+            .await
+            .expect("bind echo port");
         let mut buf = vec![0u8; 2048];
         loop {
-            let (n, src) = tokio::time::timeout(Duration::from_secs(90), socket.recv_from(&mut buf))
-                .await
-                .expect("echo timeout")
-                .expect("echo recv");
+            let (n, src) =
+                tokio::time::timeout(Duration::from_secs(90), socket.recv_from(&mut buf))
+                    .await
+                    .expect("echo timeout")
+                    .expect("echo recv");
             let data = String::from_utf8_lossy(&buf[..n]).into_owned();
             eprintln!("[echo-{}] got {:?} from {}", echo_port, data, src);
             let reply = format!("ACK-{}", data);
@@ -220,24 +239,40 @@ async fn tunnel_roundtrip_inner(network: &str, echo_port: u16, tolerate_hard_har
         .expect("active tunnel timeout")
         .expect("active join");
     assert!(active_result.ok, "active tunnel failed: {}", active_out);
-    eprintln!("active: forward={}:{} peer={} traversal={} network={}",
-        active_result.local_forward_addr, active_result.local_forward_port, active_result.peer_endpoint, active_result.selected_traversal, active_result.network);
+    eprintln!(
+        "active: forward={}:{} peer={} traversal={} network={}",
+        active_result.local_forward_addr,
+        active_result.local_forward_port,
+        active_result.peer_endpoint,
+        active_result.selected_traversal,
+        active_result.network
+    );
 
     let (passive_out, passive_result) = tokio::time::timeout(Duration::from_secs(100), passive)
         .await
         .expect("passive tunnel timeout")
         .expect("passive join");
     assert!(passive_result.ok, "passive tunnel failed: {}", passive_out);
-    eprintln!("passive: forward={}:{} peer={} traversal={} network={}",
-        passive_result.local_forward_addr, passive_result.local_forward_port, passive_result.peer_endpoint, passive_result.selected_traversal, passive_result.network);
+    eprintln!(
+        "passive: forward={}:{} peer={} traversal={} network={}",
+        passive_result.local_forward_addr,
+        passive_result.local_forward_port,
+        passive_result.peer_endpoint,
+        passive_result.selected_traversal,
+        passive_result.network
+    );
 
     // The passive side acts as the WireGuard client: it sends from its WG
     // endpoint port (the tunnel's remote_target_port, exactly how kernel WG
     // behaves) through the forward port, and receives the echo back on the
     // same port.
-    let target: SocketAddr = format!("127.0.0.1:{}", passive_result.local_forward_port).parse().unwrap();
+    let target: SocketAddr = format!("127.0.0.1:{}", passive_result.local_forward_port)
+        .parse()
+        .unwrap();
     let bind_to = format!("127.0.0.1:{}", wg_port);
-    let wg_socket = tokio::net::UdpSocket::bind(&bind_to).await.expect("bind wg port");
+    let wg_socket = tokio::net::UdpSocket::bind(&bind_to)
+        .await
+        .expect("bind wg port");
     let mut got = String::new();
     for i in 0..20 {
         wg_socket.send_to(b"ping", target).await.unwrap();
@@ -277,7 +312,9 @@ async fn tunnel_roundtrip_inner(network: &str, echo_port: u16, tolerate_hard_har
         let input = format!(r#"{{"handle_id":"{}"}}"#, handle);
         let c = std::ffi::CString::new(input).unwrap();
         let raw = crate::StopUdpTunnel(c.as_ptr());
-        let out = unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+        let out = unsafe { std::ffi::CStr::from_ptr(raw) }
+            .to_string_lossy()
+            .into_owned();
         crate::FreeCString(raw);
         assert!(out.contains(r#""ok":true"#), "stop failed: {}", out);
     }

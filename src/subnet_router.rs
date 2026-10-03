@@ -18,8 +18,8 @@
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::process::Command;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use crate::types::{StartSubnetRouterInput, SubnetRouterResult};
 
@@ -63,7 +63,10 @@ fn run_output(name: &str, args: &[&str]) -> std::result::Result<String, String> 
         if text.is_empty() {
             return Err(format!("{} {:?} failed: {}", name, args, output.status));
         }
-        return Err(format!("{} {:?} failed: {}: {}", name, args, output.status, text));
+        return Err(format!(
+            "{} {:?} failed: {}: {}",
+            name, args, output.status, text
+        ));
     }
     Ok(text)
 }
@@ -265,41 +268,67 @@ fn parse_cidr(cidr: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-fn linux_session_rules(req: &StartSubnetRouterInput) -> std::result::Result<Vec<IptablesRule>, String> {
+fn linux_session_rules(
+    req: &StartSubnetRouterInput,
+) -> std::result::Result<Vec<IptablesRule>, String> {
     let peer = format!("{}/32", req.peer_tail_ip);
     let mut out = Vec::new();
     for cidr in &req.exposed_lan_cidrs {
         parse_cidr(cidr)?;
-        let comment = format!("p2premote session {} peer {}", req.session_id, req.peer_device_id);
+        let comment = format!(
+            "p2premote session {} peer {}",
+            req.session_id, req.peer_device_id
+        );
         out.push(IptablesRule {
             table: String::new(),
             spec: vec![
                 LINUX_FORWARD_CHAIN.into(),
-                "-s".into(), peer.clone(),
-                "-d".into(), cidr.clone(),
-                "-m".into(), "comment".into(), "--comment".into(), comment.clone(),
-                "-j".into(), "ACCEPT".into(),
+                "-s".into(),
+                peer.clone(),
+                "-d".into(),
+                cidr.clone(),
+                "-m".into(),
+                "comment".into(),
+                "--comment".into(),
+                comment.clone(),
+                "-j".into(),
+                "ACCEPT".into(),
             ],
         });
         out.push(IptablesRule {
             table: String::new(),
             spec: vec![
                 LINUX_FORWARD_CHAIN.into(),
-                "-d".into(), peer.clone(),
-                "-s".into(), cidr.clone(),
-                "-m".into(), "conntrack".into(), "--ctstate".into(), "ESTABLISHED,RELATED".into(),
-                "-m".into(), "comment".into(), "--comment".into(), comment.clone(),
-                "-j".into(), "ACCEPT".into(),
+                "-d".into(),
+                peer.clone(),
+                "-s".into(),
+                cidr.clone(),
+                "-m".into(),
+                "conntrack".into(),
+                "--ctstate".into(),
+                "ESTABLISHED,RELATED".into(),
+                "-m".into(),
+                "comment".into(),
+                "--comment".into(),
+                comment.clone(),
+                "-j".into(),
+                "ACCEPT".into(),
             ],
         });
         out.push(IptablesRule {
             table: "nat".into(),
             spec: vec![
                 LINUX_NAT_CHAIN.into(),
-                "-s".into(), peer.clone(),
-                "-d".into(), cidr.clone(),
-                "-m".into(), "comment".into(), "--comment".into(), comment.clone(),
-                "-j".into(), "MASQUERADE".into(),
+                "-s".into(),
+                peer.clone(),
+                "-d".into(),
+                cidr.clone(),
+                "-m".into(),
+                "comment".into(),
+                "--comment".into(),
+                comment.clone(),
+                "-j".into(),
+                "MASQUERADE".into(),
             ],
         });
     }
@@ -371,17 +400,26 @@ fn delete_iptables_rule(rule: &IptablesRule) -> std::result::Result<(), String> 
 }
 
 fn prepare_linux_router() -> std::result::Result<(), String> {
-    for key in ["net.ipv4.conf.all.rp_filter", "net.ipv4.conf.default.rp_filter"] {
+    for key in [
+        "net.ipv4.conf.all.rp_filter",
+        "net.ipv4.conf.default.rp_filter",
+    ] {
         let rp_filter = run_output("sysctl", &["-n", key])
             .map_err(|e| format!("read {} failed: {}", key, e))?;
         if rp_filter.trim() == "1" {
-            return Err(format!("{}=1 blocks routed WireGuard traffic; set it to 0 or 2", key));
+            return Err(format!(
+                "{}=1 blocks routed WireGuard traffic; set it to 0 or 2",
+                key
+            ));
         }
     }
     // Enable-only by design: the previous value is neither recorded nor restored.
     run_command("sysctl", &["-w", "net.ipv4.ip_forward=1"])
         .map_err(|e| format!("enable ip_forward failed: {}", e))?;
-    for (table, name, parent) in [("", LINUX_FORWARD_CHAIN, "FORWARD"), ("nat", LINUX_NAT_CHAIN, "POSTROUTING")] {
+    for (table, name, parent) in [
+        ("", LINUX_FORWARD_CHAIN, "FORWARD"),
+        ("nat", LINUX_NAT_CHAIN, "POSTROUTING"),
+    ] {
         let mut create_args: Vec<&str> = Vec::new();
         if !table.is_empty() {
             create_args.push("-t");
@@ -393,8 +431,12 @@ fn prepare_linux_router() -> std::result::Result<(), String> {
             table: table.to_string(),
             spec: vec![
                 parent.to_string(),
-                "-m".into(), "comment".into(), "--comment".into(), "p2premote subnet router".into(),
-                "-j".into(), name.to_string(),
+                "-m".into(),
+                "comment".into(),
+                "--comment".into(),
+                "p2premote subnet router".into(),
+                "-j".into(),
+                name.to_string(),
             ],
         };
         if let Err(err) = insert_iptables_rule(&jump) {
@@ -411,16 +453,24 @@ fn teardown_linux_router() {
             table: String::new(),
             spec: vec![
                 "FORWARD".into(),
-                "-m".into(), "comment".into(), "--comment".into(), "p2premote subnet router".into(),
-                "-j".into(), LINUX_FORWARD_CHAIN.into(),
+                "-m".into(),
+                "comment".into(),
+                "--comment".into(),
+                "p2premote subnet router".into(),
+                "-j".into(),
+                LINUX_FORWARD_CHAIN.into(),
             ],
         },
         IptablesRule {
             table: "nat".into(),
             spec: vec![
                 "POSTROUTING".into(),
-                "-m".into(), "comment".into(), "--comment".into(), "p2premote subnet router".into(),
-                "-j".into(), LINUX_NAT_CHAIN.into(),
+                "-m".into(),
+                "comment".into(),
+                "--comment".into(),
+                "p2premote subnet router".into(),
+                "-j".into(),
+                LINUX_NAT_CHAIN.into(),
             ],
         },
     ] {

@@ -86,15 +86,16 @@ pub fn topic_exchange() -> String {
 pub fn mqtt_broker_servers() -> Vec<String> {
     static VALUE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     VALUE
-        .get_or_init(|| {
-            match std::env::var("P2PREMOTE_MQTT_BROKERS") {
-                Ok(v) if !v.trim().is_empty() => v
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>(),
-                _ => DEFAULT_MQTT_BROKER_SERVERS.iter().map(|s| s.to_string()).collect(),
-            }
+        .get_or_init(|| match std::env::var("P2PREMOTE_MQTT_BROKERS") {
+            Ok(v) if !v.trim().is_empty() => v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>(),
+            _ => DEFAULT_MQTT_BROKER_SERVERS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         })
         .clone()
 }
@@ -374,13 +375,7 @@ mod tests {
             "failed to exchange address info: timeout waiting for remote data exchange on topic x"
         );
         // Wrap-on/wrap-off helpers must preserve the marker.
-        assert_eq!(
-            err.clone().wrap_unretryable().stage(),
-            ErrorStage::Exchange
-        );
-        assert_eq!(
-            P2pError::msg("plain failure").stage(),
-            ErrorStage::Unknown
-        );
+        assert_eq!(err.clone().wrap_unretryable().stage(), ErrorStage::Exchange);
+        assert_eq!(P2pError::msg("plain failure").stage(), ErrorStage::Unknown);
     }
 }

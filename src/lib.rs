@@ -14,9 +14,9 @@ pub mod types;
 
 #[cfg(feature = "ffi")]
 use std::ffi::{CStr, CString};
-use std::os::raw::c_int;
 #[cfg(feature = "ffi")]
 use std::os::raw::c_char;
+use std::os::raw::c_int;
 
 #[cfg(feature = "ffi")]
 use types::*;
@@ -33,7 +33,9 @@ const NULL_INPUT: &str = r#"{"ok":false,"error":"input is null"}"#;
 #[cfg(feature = "ffi")]
 fn alloc_cstring(s: String) -> *mut c_char {
     CString::new(s)
-        .unwrap_or_else(|_| CString::new(r#"{"ok":false,"error":"result contains NUL byte"}"#).unwrap())
+        .unwrap_or_else(|_| {
+            CString::new(r#"{"ok":false,"error":"result contains NUL byte"}"#).unwrap()
+        })
         .into_raw()
 }
 
@@ -80,7 +82,8 @@ fn handle_start_udp_tunnel_json(input: &str) -> String {
         Ok(tunnel) => {
             let mut result = tunnel.result;
             let stop = tunnel.stop;
-            let handle_id = handles::register_udp_tunnel(result.clone(), Box::new(move || stop.stop()));
+            let handle_id =
+                handles::register_udp_tunnel(result.clone(), Box::new(move || stop.stop()));
             result.handle_id = handle_id;
             encode_tunnel_result(&result)
         }
@@ -119,9 +122,7 @@ fn encode_stop_tunnel_result(ok: bool, error: &str) -> String {
 fn handle_stop_udp_tunnel_json(input: &str) -> String {
     let req: StopTunnelInput = match serde_json::from_str(input) {
         Ok(req) => req,
-        Err(err) => {
-            return encode_stop_tunnel_result(false, &json_err("invalid input json", err))
-        }
+        Err(err) => return encode_stop_tunnel_result(false, &json_err("invalid input json", err)),
     };
     if req.handle_id.is_empty() {
         return encode_stop_tunnel_result(false, "handle_id is required");
@@ -359,7 +360,11 @@ fn handle_exchange_json(input: &str) -> String {
             ..Default::default()
         });
     }
-    let timeout_secs = if req.timeout_secs <= 0 { 60 } else { req.timeout_secs };
+    let timeout_secs = if req.timeout_secs <= 0 {
+        60
+    } else {
+        req.timeout_secs
+    };
     let deadline = std::time::Duration::from_secs(timeout_secs as u64 + 10);
     let timeout = std::time::Duration::from_secs(timeout_secs as u64);
 
@@ -407,10 +412,8 @@ pub mod api {
             .map_err(|error| error.to_string())?;
         let mut result = tunnel.result;
         let stop = tunnel.stop;
-        result.handle_id = handles::register_udp_tunnel(
-            result.clone(),
-            Box::new(move || stop.stop()),
-        );
+        result.handle_id =
+            handles::register_udp_tunnel(result.clone(), Box::new(move || stop.stop()));
         Ok(result)
     }
 
@@ -422,7 +425,9 @@ pub mod api {
     /// Manage the Linux subnet-router backend without crossing the C ABI.
     /// On platforms without a backend the returned result contains `ok=false`
     /// and the platform-specific explanation.
-    pub fn start_subnet_router(request: types::StartSubnetRouterInput) -> types::SubnetRouterResult {
+    pub fn start_subnet_router(
+        request: types::StartSubnetRouterInput,
+    ) -> types::SubnetRouterResult {
         super::subnet_router::start_subnet_router(request)
     }
 
@@ -453,7 +458,11 @@ pub mod api {
         )
         .await
         .map_err(|error| error.to_string())?;
-        Ok(types::ExchangeResult { ok: true, recv_data: recv, error: String::new() })
+        Ok(types::ExchangeResult {
+            ok: true,
+            recv_data: recv,
+            error: String::new(),
+        })
     }
 
     /// NAT classification entry for the caller (gonc -nat-checker
@@ -468,7 +477,10 @@ pub mod api {
 
     /// Classify the local NAT for the given networks (any of
     /// "udp4"/"tcp4"/"udp6"/"tcp6").
-    pub async fn detect_nat(networks: &[&str], budget: Duration) -> Result<Vec<NatAddressInfo>, String> {
+    pub async fn detect_nat(
+        networks: &[&str],
+        budget: Duration,
+    ) -> Result<Vec<NatAddressInfo>, String> {
         let scope = easyp2p::Scope::from_timeout(budget);
         let network_list: Vec<String> = networks.iter().map(|s| s.to_string()).collect();
         let results = easyp2p::stun::get_networks_public_ips(
@@ -590,13 +602,17 @@ pub extern "C" fn StartUserspaceWgPeer(input: *const c_char) -> *mut c_char {
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn StopUserspaceWgPeer(input: *const c_char) -> *mut c_char {
-    ffi_guard(input, |s| handle_windows_wg_peer_json(s, platform::stop_userspace_wg_peer))
+    ffi_guard(input, |s| {
+        handle_windows_wg_peer_json(s, platform::stop_userspace_wg_peer)
+    })
 }
 
 #[cfg(feature = "ffi")]
 #[no_mangle]
 pub extern "C" fn GetUserspaceWgPeerStatus(input: *const c_char) -> *mut c_char {
-    ffi_guard(input, |s| handle_windows_wg_peer_json(s, platform::get_userspace_wg_peer_status))
+    ffi_guard(input, |s| {
+        handle_windows_wg_peer_json(s, platform::get_userspace_wg_peer_status)
+    })
 }
 
 #[cfg(feature = "ffi")]

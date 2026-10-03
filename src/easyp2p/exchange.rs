@@ -20,10 +20,17 @@ pub async fn mqtt_exchange_payload(
         return Err(P2pError::msg("sessionUid is required"));
     }
     if !(EXMODE_MUTUAL..=EXMODE_PUBLISH_ONLY).contains(&exmode) {
-        return Err(P2pError::msg(format!("unsupported exchange mode: {}", exmode)));
+        return Err(P2pError::msg(format!(
+            "unsupported exchange mode: {}",
+            exmode
+        )));
     }
 
-    let topic_salt = format!("{}{}", salt_prefix, crypto::derive_key_for_topic(salt_prefix, session_uid));
+    let topic_salt = format!(
+        "{}{}",
+        salt_prefix,
+        crypto::derive_key_for_topic(salt_prefix, session_uid)
+    );
     let client_id = crypto::mqtt_generate_client_id("WG", session_uid);
     let scope = Scope::from_timeout(budget);
     let signal = MqttSignalSession::new(&scope, &client_id).await?;
@@ -32,7 +39,14 @@ pub async fn mqtt_exchange_payload(
         // Legacy reply mode: wait for the active peer's repeated payload, then
         // publish the response on the same broker.
         let (recv_data, broker_index) = mqtt_signal::secure_exchange_with_session::<String>(
-            &scope, &signal, EXMODE_WAIT_ONLY, &send_data.to_string(), &topic_salt, session_uid, timeout, None,
+            &scope,
+            &signal,
+            EXMODE_WAIT_ONLY,
+            &send_data.to_string(),
+            &topic_salt,
+            session_uid,
+            timeout,
+            None,
         )
         .await?;
         mqtt_signal::mqtt_secure_publish_with_session::<String>(
@@ -49,7 +63,14 @@ pub async fn mqtt_exchange_payload(
     }
 
     let (recv_data, _) = mqtt_signal::secure_exchange_with_session::<String>(
-        &scope, &signal, exmode, &send_data.to_string(), &topic_salt, session_uid, timeout, None,
+        &scope,
+        &signal,
+        exmode,
+        &send_data.to_string(),
+        &topic_salt,
+        session_uid,
+        timeout,
+        None,
     )
     .await?;
     Ok(recv_data)

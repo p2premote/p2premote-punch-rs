@@ -245,7 +245,11 @@ struct Dispatch {
     ack: mpsc::Receiver<(LanMsg, SocketAddr)>,
 }
 
-fn spawn_dispatcher(mc: Arc<LanMcast>, stop: Arc<crate::easyp2p::CancelToken>, key: [u8; 32]) -> Dispatch {
+fn spawn_dispatcher(
+    mc: Arc<LanMcast>,
+    stop: Arc<crate::easyp2p::CancelToken>,
+    key: [u8; 32],
+) -> Dispatch {
     let (beacon_tx, beacon_rx) = mpsc::channel(32);
     let (response_tx, response_rx) = mpsc::channel(32);
     let (confirm_tx, confirm_rx) = mpsc::channel(32);
@@ -258,13 +262,23 @@ fn spawn_dispatcher(mc: Arc<LanMcast>, stop: Arc<crate::easyp2p::CancelToken>, k
                 r = mc.socket.recv_from(&mut buf) => r,
             };
             let Ok((n, src)) = received else { return };
-            let Some(msg) = lan_decode(&key, &buf[..n]) else { continue };
+            let Some(msg) = lan_decode(&key, &buf[..n]) else {
+                continue;
+            };
             let pkt = (msg, src);
             match pkt.0.kind.as_str() {
-                "B" => { let _ = beacon_tx.try_send(pkt); }
-                "R" => { let _ = response_tx.try_send(pkt); }
-                "C" => { let _ = confirm_tx.try_send(pkt); }
-                "A" => { let _ = ack_tx.try_send(pkt); }
+                "B" => {
+                    let _ = beacon_tx.try_send(pkt);
+                }
+                "R" => {
+                    let _ = response_tx.try_send(pkt);
+                }
+                "C" => {
+                    let _ = confirm_tx.try_send(pkt);
+                }
+                "A" => {
+                    let _ = ack_tx.try_send(pkt);
+                }
                 _ => {}
             }
         }
@@ -290,11 +304,17 @@ pub async fn lan_discover(
     let self_nonces: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     let punch_port: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
 
-    let mc = Arc::new(LanMcast::new().map_err(|e| P2pError::msg(format!("bind {}:{}: {}", LAN_MULTICAST_IP, LAN_MULTICAST_PORT, e)))?);
+    let mc = Arc::new(LanMcast::new().map_err(|e| {
+        P2pError::msg(format!(
+            "bind {}:{}: {}",
+            LAN_MULTICAST_IP, LAN_MULTICAST_PORT, e
+        ))
+    })?);
     let stop = Arc::new(crate::easyp2p::CancelToken::new());
     let mut dispatch = spawn_dispatcher(mc.clone(), stop.clone(), key);
 
-    let (result_tx, mut result_rx) = mpsc::channel::<std::result::Result<LanDiscoverResult, P2pError>>(2);
+    let (result_tx, mut result_rx) =
+        mpsc::channel::<std::result::Result<LanDiscoverResult, P2pError>>(2);
 
     // initiator
     {
@@ -308,7 +328,19 @@ pub async fn lan_discover(
         let sid = sid.clone();
         let tp = transport_pref.to_string();
         tokio::spawn(async move {
-            let result = lan_initiator(&scope, &mc, &mut response, &mut ack, &key, &sid, &tp, &self_nonces, &punch_port, passive).await;
+            let result = lan_initiator(
+                &scope,
+                &mc,
+                &mut response,
+                &mut ack,
+                &key,
+                &sid,
+                &tp,
+                &self_nonces,
+                &punch_port,
+                passive,
+            )
+            .await;
             let _ = result_tx.send(result).await;
         });
     }
@@ -324,7 +356,18 @@ pub async fn lan_discover(
         let tp = transport_pref.to_string();
         let scope = scope.clone();
         tokio::spawn(async move {
-            let result = lan_responder(&scope, &mc, &mut beacon, &mut confirm, &key, &sid, &tp, &self_nonces, &punch_port).await;
+            let result = lan_responder(
+                &scope,
+                &mc,
+                &mut beacon,
+                &mut confirm,
+                &key,
+                &sid,
+                &tp,
+                &self_nonces,
+                &punch_port,
+            )
+            .await;
             let _ = result_tx.send(result).await;
         });
     }
@@ -345,7 +388,8 @@ pub async fn lan_discover(
 
 fn next_beacon_delay(passive: bool, beacons_sent: u32) -> Duration {
     if !passive {
-        let fast = (LAN_ACTIVE_FAST_BEACON_WINDOW.as_millis() / LAN_ACTIVE_BEACON_INTERVAL.as_millis()) as u32;
+        let fast = (LAN_ACTIVE_FAST_BEACON_WINDOW.as_millis()
+            / LAN_ACTIVE_BEACON_INTERVAL.as_millis()) as u32;
         if beacons_sent > fast {
             return LAN_ACTIVE_SLOW_BEACON_INTERVAL;
         }
@@ -363,7 +407,10 @@ fn next_beacon_delay(passive: bool, beacons_sent: u32) -> Duration {
 fn take_punch_port(punch_port: &Arc<Mutex<Option<u16>>>) -> Result<u16> {
     let mut guard = punch_port.lock().unwrap();
     if guard.is_none() {
-        *guard = Some(netx::get_free_port().map_err(|e| P2pError::msg(format!("allocate LAN punch port: {}", e)))?);
+        *guard = Some(
+            netx::get_free_port()
+                .map_err(|e| P2pError::msg(format!("allocate LAN punch port: {}", e)))?,
+        );
     }
     Ok(guard.unwrap())
 }
@@ -383,11 +430,15 @@ async fn lan_initiator(
     let nonce_a = lan_nonce();
     self_nonces.lock().unwrap().insert(nonce_a.clone());
 
-    let beacon_data = lan_encode(key, "B", &LanBeacon {
-        session_id: sid.to_string(),
-        nonce_a: nonce_a.clone(),
-        transport: tp.to_string(),
-    });
+    let beacon_data = lan_encode(
+        key,
+        "B",
+        &LanBeacon {
+            session_id: sid.to_string(),
+            nonce_a: nonce_a.clone(),
+            transport: tp.to_string(),
+        },
+    );
 
     let role_name = if passive { "Passive" } else { "Initiator" };
     crate::p2plog!("[LAN] {}: broadcasting beacon", role_name);
@@ -417,15 +468,25 @@ async fn lan_initiator(
     let local_ip = best_local_ip_for_remote(&resp.0.ip).unwrap_or_default();
     let final_tp = negotiate_transport(tp, &resp.0.transport);
     let port = take_punch_port(punch_port)?;
-    crate::p2plog!("[LAN] {}: got response from {}:{}, localIP={}", role_name, resp.0.ip, resp.0.port, local_ip);
+    crate::p2plog!(
+        "[LAN] {}: got response from {}:{}, localIP={}",
+        role_name,
+        resp.0.ip,
+        resp.0.port,
+        local_ip
+    );
 
     // Phase 2: send Confirm + wait for Ack.
-    let confirm_data = lan_encode(key, "C", &LanConfirm {
-        nonce_b: resp.0.nonce_b.clone(),
-        transport: final_tp.clone(),
-        ip: local_ip.clone(),
-        port: port as i64,
-    });
+    let confirm_data = lan_encode(
+        key,
+        "C",
+        &LanConfirm {
+            nonce_b: resp.0.nonce_b.clone(),
+            transport: final_tp.clone(),
+            ip: local_ip.clone(),
+            port: port as i64,
+        },
+    );
     for _ in 0..3 {
         mc.broadcast(&confirm_data).await;
         mc.send_to(&confirm_data, Some(resp.1)).await;
@@ -488,16 +549,24 @@ async fn lan_responder(
             }
         };
         let port = take_punch_port(punch_port)?;
-        crate::p2plog!("[LAN] Responder: beacon from {}, bestLocal={}", remote_ip, local_ip);
+        crate::p2plog!(
+            "[LAN] Responder: beacon from {}, bestLocal={}",
+            remote_ip,
+            local_ip
+        );
 
         let nonce_b = lan_nonce();
-        let resp_data = lan_encode(key, "R", &LanResponse {
-            nonce_a: beacon.nonce_a.clone(),
-            nonce_b: nonce_b.clone(),
-            transport: tp.to_string(),
-            ip: local_ip.clone(),
-            port: port as i64,
-        });
+        let resp_data = lan_encode(
+            key,
+            "R",
+            &LanResponse {
+                nonce_a: beacon.nonce_a.clone(),
+                nonce_b: nonce_b.clone(),
+                transport: tp.to_string(),
+                ip: local_ip.clone(),
+                port: port as i64,
+            },
+        );
         for _ in 0..3 {
             mc.broadcast(&resp_data).await;
             mc.send_to(&resp_data, Some(src)).await;
@@ -533,7 +602,13 @@ async fn lan_responder(
         };
 
         // Phase 3: send ACK.
-        let ack_data = lan_encode(key, "A", &LanAck { nonce_a: beacon.nonce_a.clone() });
+        let ack_data = lan_encode(
+            key,
+            "A",
+            &LanAck {
+                nonce_a: beacon.nonce_a.clone(),
+            },
+        );
         for _ in 0..8 {
             mc.broadcast(&ack_data).await;
             mc.send_to(&ack_data, Some(confirm_src)).await;
@@ -565,7 +640,11 @@ pub async fn easy_p2p_lan(
     crate::p2plog!("=== LAN Discovery Mode ===");
     let result = lan_discover(scope, session_key, transport_pref, timeout, passive).await?;
 
-    let network = if result.transport == "tcp" { "tcp4" } else { "udp4" };
+    let network = if result.transport == "tcp" {
+        "tcp4"
+    } else {
+        "udp4"
+    };
     let local_addr = netx::join_host_port(&result.local_ip, result.local_port);
     let remote_addr = netx::join_host_port(&result.remote_ip, result.remote_port);
     let shared_key = {

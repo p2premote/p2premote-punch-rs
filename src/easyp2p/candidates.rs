@@ -109,7 +109,8 @@ pub fn is_same_lan(ip1: &str, ip2: &str) -> bool {
             if x[0] == 10 && y[0] == 10 {
                 return true;
             }
-            if x[0] == 172 && y[0] == 172 && (16..=31).contains(&x[1]) && (16..=31).contains(&y[1]) {
+            if x[0] == 172 && y[0] == 172 && (16..=31).contains(&x[1]) && (16..=31).contains(&y[1])
+            {
                 return x[1] == y[1];
             }
             if x[0] == 192 && x[1] == 168 && y[0] == 192 && y[1] == 168 {
@@ -149,7 +150,9 @@ pub fn compare_p2p_addresses(info: &P2PAddressInfo) -> (bool, bool) {
 pub fn both_private_lan(lan_addr1: &str, lan_addr2: &str) -> bool {
     let ip1 = extract_ip(lan_addr1);
     let ip2 = extract_ip(lan_addr2);
-    let (Some(p1), Some(p2)): (Option<IpAddr>, Option<IpAddr>) = (ip1.parse().ok(), ip2.parse().ok()) else {
+    let (Some(p1), Some(p2)): (Option<IpAddr>, Option<IpAddr>) =
+        (ip1.parse().ok(), ip2.parse().ok())
+    else {
         return false;
     };
     ip_is_private(p1) && ip_is_private(p2)
@@ -166,10 +169,16 @@ fn is_gateway_with_internal(info: &P2PAddressInfo) -> bool {
     let local_is_gateway = local_lan_ip == local_nat_ip;
     let remote_is_gateway = remote_lan_ip == remote_nat_ip;
     if local_is_gateway && !remote_is_gateway {
-        return remote_lan_ip.parse::<IpAddr>().map(ip_is_private).unwrap_or(false);
+        return remote_lan_ip
+            .parse::<IpAddr>()
+            .map(ip_is_private)
+            .unwrap_or(false);
     }
     if remote_is_gateway && !local_is_gateway {
-        return local_lan_ip.parse::<IpAddr>().map(ip_is_private).unwrap_or(false);
+        return local_lan_ip
+            .parse::<IpAddr>()
+            .map(ip_is_private)
+            .unwrap_or(false);
     }
     false
 }
@@ -245,7 +254,9 @@ pub fn build_base_p2p_candidates(
                 remote_udp4_nat_alternatives: Vec::new(),
             };
 
-            if get_nat_type_priority(&my.nat_type) == 0 || get_nat_type_priority(&remote.nat_type) == 0 {
+            if get_nat_type_priority(&my.nat_type) == 0
+                || get_nat_type_priority(&remote.nat_type) == 0
+            {
                 continue;
             }
             let (same_nat, similar_lan) = compare_p2p_addresses(&item);
@@ -305,7 +316,10 @@ fn canonical_lan_probe_candidate_key(info: &P2PAddressInfo) -> String {
     if local_endpoint > remote_endpoint {
         std::mem::swap(&mut local_endpoint, &mut remote_endpoint);
     }
-    format!("{}\x00{}\x00{}", info.network, local_endpoint, remote_endpoint)
+    format!(
+        "{}\x00{}\x00{}",
+        info.network, local_endpoint, remote_endpoint
+    )
 }
 
 pub fn select_lan_probe_candidate(
@@ -320,7 +334,8 @@ pub fn select_lan_probe_candidate(
         for (i, candidate) in candidates.iter().enumerate().skip(1) {
             let s = &candidates[selected];
             if candidate.remote_order < s.remote_order
-                || (candidate.remote_order == s.remote_order && candidate.local_order < s.local_order)
+                || (candidate.remote_order == s.remote_order
+                    && candidate.local_order < s.local_order)
             {
                 selected = i;
             }
@@ -396,8 +411,10 @@ pub fn sort_p2p_address_infos(addrs: Vec<P2PAddressInfo>) -> Vec<P2PAddressInfo>
         if net_a != net_b {
             return net_b.cmp(&net_a);
         }
-        let nat_a = get_nat_type_priority(&a.local_nat_type) + get_nat_type_priority(&a.remote_nat_type);
-        let nat_b = get_nat_type_priority(&b.local_nat_type) + get_nat_type_priority(&b.remote_nat_type);
+        let nat_a =
+            get_nat_type_priority(&a.local_nat_type) + get_nat_type_priority(&a.remote_nat_type);
+        let nat_b =
+            get_nat_type_priority(&b.local_nat_type) + get_nat_type_priority(&b.remote_nat_type);
         if nat_a != nat_b {
             return nat_b.cmp(&nat_a);
         }

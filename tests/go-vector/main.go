@@ -2,7 +2,8 @@
 
 // Standalone vector generator for p2premote-punch-rs tests. Uses only the
 // standard library so it runs with any Go toolchain. Run:
-//   go run tests/go-vector/main.go
+//
+//	go run tests/go-vector/main.go
 package main
 
 import (

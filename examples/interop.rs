@@ -22,7 +22,9 @@ use p2premote_punch::*;
 fn call(f: unsafe extern "C" fn(*const c_char) -> *mut c_char, input: &str) -> String {
     let c = CString::new(input).unwrap();
     let raw = unsafe { f(c.as_ptr()) };
-    let out = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+    let out = unsafe { CStr::from_ptr(raw) }
+        .to_string_lossy()
+        .into_owned();
     FreeCString(raw);
     out
 }
@@ -61,8 +63,12 @@ fn wait_cmd(args: &[String]) {
             let scope = Scope::from_timeout(Duration::from_secs(70));
             match mqtt_wait(&scope, &token, "", Duration::from_secs(60)).await {
                 Ok(tid) => {
-                    let (parsed, salt) = p2premote_punch::easyp2p::wake::HelloPayload::parse_from(&tid);
-                    println!("WAIT_TID {:?} salt={:?} control={:?} app={:?} param={:?}", tid, salt, parsed.control, parsed.app, parsed.param);
+                    let (parsed, salt) =
+                        p2premote_punch::easyp2p::wake::HelloPayload::parse_from(&tid);
+                    println!(
+                        "WAIT_TID {:?} salt={:?} control={:?} app={:?} param={:?}",
+                        tid, salt, parsed.control, parsed.app, parsed.param
+                    );
                 }
                 Err(err) => println!("WAIT_FAILED error={}", err),
             }
@@ -107,12 +113,21 @@ fn punch_tcp(args: &[String]) {
         .build()
         .expect("tokio runtime")
         .block_on(async move {
-            use p2premote_punch::easyp2p::p2p::{easy_p2p_mp_with_options, EasyP2PMPOptions, P2PConn};
+            use p2premote_punch::easyp2p::p2p::{
+                easy_p2p_mp_with_options, EasyP2PMPOptions, P2PConn,
+            };
             use p2premote_punch::easyp2p::Scope;
             use tokio::io::AsyncWriteExt;
 
             let scope = Scope::from_timeout(Duration::from_secs(110));
-            let info = match easy_p2p_mp_with_options(&scope, &network, &token, EasyP2PMPOptions::default()).await {
+            let info = match easy_p2p_mp_with_options(
+                &scope,
+                &network,
+                &token,
+                EasyP2PMPOptions::default(),
+            )
+            .await
+            {
                 Ok(info) => info,
                 Err(err) => {
                     println!("PUNCH_FAILED error={}", err);
@@ -121,7 +136,11 @@ fn punch_tcp(args: &[String]) {
             };
             println!(
                 "PUNCHED peer={} is_client={} networks={:?} local_nat={} remote_nat={}",
-                info.peer_address, info.is_client, info.networks_used, info.local_nat_type, info.remote_nat_type
+                info.peer_address,
+                info.is_client,
+                info.networks_used,
+                info.local_nat_type,
+                info.remote_nat_type
             );
             let conn = match info.conn {
                 P2PConn::Tcp(conn) => conn,
@@ -186,7 +205,10 @@ fn tunnel(args: &[String]) {
     let role = args[0].clone();
     let token = args[1].clone();
     let default_port: i32 = if role == "active" { 54820 } else { 54821 };
-    let wg_port: i32 = args.get(2).map(|p| p.parse().unwrap()).unwrap_or(default_port);
+    let wg_port: i32 = args
+        .get(2)
+        .map(|p| p.parse().unwrap())
+        .unwrap_or(default_port);
     let network: String = args.get(3).cloned().unwrap_or_else(|| "udp4".to_string());
 
     // ACK echo server on the WG endpoint port.
@@ -194,7 +216,9 @@ fn tunnel(args: &[String]) {
     let echo_thread = std::thread::spawn(move || {
         let mut buf = [0u8; 2048];
         loop {
-            let Ok((n, src)) = echo.recv_from(&mut buf) else { return };
+            let Ok((n, src)) = echo.recv_from(&mut buf) else {
+                return;
+            };
             let data = String::from_utf8_lossy(&buf[..n]).into_owned();
             println!("RECV {:?}", data);
             let _ = echo.send_to(format!("ACK-{}", data).as_bytes(), src);
@@ -233,7 +257,9 @@ fn tunnel(args: &[String]) {
         let reader_thread = std::thread::spawn(move || {
             let mut buf = [0u8; 2048];
             loop {
-                let Ok((n, _)) = reader.recv_from(&mut buf) else { return };
+                let Ok((n, _)) = reader.recv_from(&mut buf) else {
+                    return;
+                };
                 println!("PONG {:?}", String::from_utf8_lossy(&buf[..n]));
             }
         });
@@ -269,13 +295,8 @@ fn probe_cmd(args: &[String]) {
                 });
             println!("PROBE network={:?} matrix={:?}", network, networks);
             let scope = Scope::from_timeout(Duration::from_secs(15));
-            let results = get_networks_public_ips(
-                &scope,
-                &networks,
-                "",
-                Duration::from_millis(2828),
-            )
-            .await;
+            let results =
+                get_networks_public_ips(&scope, &networks, "", Duration::from_millis(2828)).await;
             match results {
                 Ok(rs) => {
                     let ok = rs.iter().filter(|r| r.err.is_none()).count();
@@ -288,11 +309,13 @@ fn probe_cmd(args: &[String]) {
                         }
                     }
                     for a in analyze_stun_results(&rs) {
-                        println!("PROBE_CLASS network={} lan={} nat={} type={}", a.network, a.lan, a.nat, a.nattype);
+                        println!(
+                            "PROBE_CLASS network={} lan={} nat={} type={}",
+                            a.network, a.lan, a.nat, a.nattype
+                        );
                     }
                 }
                 Err(e) => println!("PROBE_FAILED error={}", e),
             }
         });
 }
-

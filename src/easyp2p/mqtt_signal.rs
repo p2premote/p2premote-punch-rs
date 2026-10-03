@@ -14,7 +14,10 @@ use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use tokio::sync::mpsc;
 
 use super::crypto::{self, SecurePayload};
-use super::{CancelToken, P2pError, Result, Scope, EXMODE_MUTUAL, EXMODE_PUBLISH_ONLY, EXMODE_WAIT_ONLY, TOPIC_DESC_SIGNAL};
+use super::{
+    CancelToken, P2pError, Result, Scope, EXMODE_MUTUAL, EXMODE_PUBLISH_ONLY, EXMODE_WAIT_ONLY,
+    TOPIC_DESC_SIGNAL,
+};
 
 pub const MQTT_NO_PREFERRED_BROKER: i32 = -1;
 
@@ -108,7 +111,6 @@ struct SessionState {
     closed: bool,
 }
 
-
 pub struct MqttSignalSession {
     brokers: Vec<BrokerConfig>,
     cancel: CancelToken,
@@ -120,10 +122,7 @@ pub struct MqttSignalSession {
 impl MqttSignalSession {
     /// NewMQTTSignalSession: connect all brokers concurrently; succeeds when at
     /// least one broker is connected. Fails only if none connect within scope.
-    pub async fn new(
-        scope: &Scope,
-        client_id: &str,
-    ) -> Result<Arc<MqttSignalSession>> {
+    pub async fn new(scope: &Scope, client_id: &str) -> Result<Arc<MqttSignalSession>> {
         let mut brokers = Vec::new();
         for server in super::mqtt_broker_servers() {
             brokers.push(parse_mqtt_server(&server)?);
@@ -155,7 +154,8 @@ impl MqttSignalSession {
                 let fail_tx = fail_tx.clone();
                 let ready_tx = ready_tx.clone();
                 tokio::spawn(async move {
-                    s.broker_loop(config, index, client_id, fail_tx, ready_tx).await;
+                    s.broker_loop(config, index, client_id, fail_tx, ready_tx)
+                        .await;
                 });
             }
             drop(fail_tx);
@@ -253,7 +253,12 @@ impl MqttSignalSession {
                         let desired = self.desired_subscriptions();
                         for (topic, qos) in desired {
                             let ok = self.subscribe_client(index, &client, &topic, qos).await;
-                            crate::p2plog!("[MQTT-DIAG] broker#{} resubscribe {} -> {}", index, topic, ok);
+                            crate::p2plog!(
+                                "[MQTT-DIAG] broker#{} resubscribe {} -> {}",
+                                index,
+                                topic,
+                                ok
+                            );
                         }
                     }
                     Event::Incoming(Packet::Publish(publish)) => {
@@ -323,9 +328,22 @@ impl MqttSignalSession {
             .unwrap_or_else(|| format!("broker#{}", index))
     }
 
-    async fn subscribe_client(&self, index: usize, client: &AsyncClient, topic: &str, qos: u8) -> bool {
+    async fn subscribe_client(
+        &self,
+        index: usize,
+        client: &AsyncClient,
+        topic: &str,
+        qos: u8,
+    ) -> bool {
         let result = client
-            .subscribe(topic, if qos >= 1 { QoS::AtLeastOnce } else { QoS::AtMostOnce })
+            .subscribe(
+                topic,
+                if qos >= 1 {
+                    QoS::AtLeastOnce
+                } else {
+                    QoS::AtMostOnce
+                },
+            )
             .await;
         let ok = result.is_ok();
         if ok {
@@ -362,12 +380,20 @@ impl MqttSignalSession {
             let mut state = self.state.lock().unwrap();
             state.subscriptions.remove(topic);
             state.subscribed.remove(topic);
-            return Err(P2pError::msg(format!("failed to subscribe MQTT topic {}", topic)));
+            return Err(P2pError::msg(format!(
+                "failed to subscribe MQTT topic {}",
+                topic
+            )));
         }
         Ok(())
     }
 
-    pub async fn prepare_topic(&self, scope: &Scope, topic_salt: &str, session_uid: &str) -> Result<()> {
+    pub async fn prepare_topic(
+        &self,
+        scope: &Scope,
+        topic_salt: &str,
+        session_uid: &str,
+    ) -> Result<()> {
         let topic = crypto::topic_from_salt_and_session_uid(topic_salt, session_uid);
         self.subscribe(scope, &topic, 1).await
     }
@@ -383,12 +409,18 @@ impl MqttSignalSession {
                         topic,
                         data.len()
                     );
-                    state.pending.insert(topic.to_string(), RecvPayload { data, index });
+                    state
+                        .pending
+                        .insert(topic.to_string(), RecvPayload { data, index });
                     return;
                 }
             }
         };
-        crate::p2plog!("[MQTT-DIAG] dispatch: {} waiter(s) on {}", waiters.len(), topic);
+        crate::p2plog!(
+            "[MQTT-DIAG] dispatch: {} waiter(s) on {}",
+            waiters.len(),
+            topic
+        );
         for waiter in waiters {
             self.deliver_message(&waiter, topic, index, &data);
         }
@@ -412,12 +444,10 @@ impl MqttSignalSession {
                 Ok(true) => {}
             }
         }
-        let _ = waiter
-            .recv_tx
-            .try_send(RecvPayload {
-                data: data.to_string(),
-                index,
-            });
+        let _ = waiter.recv_tx.try_send(RecvPayload {
+            data: data.to_string(),
+            index,
+        });
     }
 
     // ============ publish ============
@@ -485,7 +515,13 @@ impl MqttSignalSession {
         count
     }
 
-    async fn publish(&self, topic: &str, payload: &str, min_success: usize, settle_window: Duration) -> usize {
+    async fn publish(
+        &self,
+        topic: &str,
+        payload: &str,
+        min_success: usize,
+        settle_window: Duration,
+    ) -> usize {
         // Only publish on brokers whose subscription for this topic is
         // confirmed. The peer's waitOnly reply uses the broker our message
         // arrived on (Go publish_preferred), and Go republishes for only
@@ -503,10 +539,16 @@ impl MqttSignalSession {
                 .filter(|(index, _)| subscribed.contains(index))
                 .collect()
         };
-        self.publish_at_least_n(&clients, topic, payload, min_success, settle_window).await
+        self.publish_at_least_n(&clients, topic, payload, min_success, settle_window)
+            .await
     }
 
-    async fn publish_preferred(&self, topic: &str, payload: &str, preferred_broker_index: usize) -> usize {
+    async fn publish_preferred(
+        &self,
+        topic: &str,
+        payload: &str,
+        preferred_broker_index: usize,
+    ) -> usize {
         let clients: Vec<(usize, AsyncClient)> = self
             .connected_clients()
             .into_iter()
@@ -755,19 +797,30 @@ fn encode_secure_payload<T: serde::Serialize>(key: &[u8; 32], send_data: &T) -> 
 
 fn decode_secure_payload<T: serde::de::DeserializeOwned>(key: &[u8; 32], data: &str) -> Result<T> {
     let payload: SecurePayload = serde_json::from_str(data).map_err(|err| {
-        P2pError::msg(format!("failed to unmarshal remote secure payload: {} ({})", err, VER_INCOMPAT))
+        P2pError::msg(format!(
+            "failed to unmarshal remote secure payload: {} ({})",
+            err, VER_INCOMPAT
+        ))
     })?;
     let plain = crypto::decrypt_aes(key, &payload).map_err(|err| {
-        P2pError::msg(format!("failed to decrypt remote payload: {} ({})", err, VER_INCOMPAT))
+        P2pError::msg(format!(
+            "failed to decrypt remote payload: {} ({})",
+            err, VER_INCOMPAT
+        ))
     })?;
     serde_json::from_slice(&plain).map_err(|err| {
-        P2pError::msg(format!("failed to unmarshal remote exchange payload: {} ({})", err, VER_INCOMPAT))
+        P2pError::msg(format!(
+            "failed to unmarshal remote exchange payload: {} ({})",
+            err, VER_INCOMPAT
+        ))
     })
 }
 
 /// MQTT_SecureExchangeWithSession: AES-GCM encrypted payload exchange.
 /// `message_filter` receives the decoded value (Go: `func(T) (bool, error)`).
-pub async fn secure_exchange_with_session<T: serde::Serialize + serde::de::DeserializeOwned + 'static>(
+pub async fn secure_exchange_with_session<
+    T: serde::Serialize + serde::de::DeserializeOwned + 'static,
+>(
     scope: &Scope,
     signal: &Arc<MqttSignalSession>,
     exmode: i32,
@@ -791,7 +844,16 @@ pub async fn secure_exchange_with_session<T: serde::Serialize + serde::de::Deser
     });
 
     let outcome = signal
-        .exchange(scope, exmode, &payload, topic_salt, session_uid, timeout, Some(handler), MQTT_NO_PREFERRED_BROKER)
+        .exchange(
+            scope,
+            exmode,
+            &payload,
+            topic_salt,
+            session_uid,
+            timeout,
+            Some(handler),
+            MQTT_NO_PREFERRED_BROKER,
+        )
         .await?;
     let decoded: T = decode_secure_payload(&key, &outcome.data)?;
     Ok((decoded, outcome.index))
@@ -811,7 +873,16 @@ pub async fn mqtt_secure_publish_with_session<T: serde::Serialize>(
     let key = crypto::derive_key(SECURE_EXCHANGE_SALT, session_uid);
     let payload = encode_secure_payload(&key, send_data)?;
     let outcome = signal
-        .exchange(scope, EXMODE_PUBLISH_ONLY, &payload, topic_salt, session_uid, timeout, None, preferred_broker_index)
+        .exchange(
+            scope,
+            EXMODE_PUBLISH_ONLY,
+            &payload,
+            topic_salt,
+            session_uid,
+            timeout,
+            None,
+            preferred_broker_index,
+        )
         .await?;
     Ok(outcome.index)
 }

@@ -11,7 +11,10 @@ use super::mqtt_signal::{self, MqttSignalSession};
 use super::punch_tcp;
 use super::punch_udp;
 use super::stun;
-use super::{P2pError, Result, Scope, CAP_CANONICAL_LAN_PROBE, CAP_LAN_PROBE, CAP_MULTI_EXIT_UDP_PUNCH, EXMODE_MUTUAL, TOPIC_DESC_SIGNAL};
+use super::{
+    P2pError, Result, Scope, CAP_CANONICAL_LAN_PROBE, CAP_LAN_PROBE, CAP_MULTI_EXIT_UDP_PUNCH,
+    EXMODE_MUTUAL, TOPIC_DESC_SIGNAL,
+};
 
 pub struct P2PSessionContext {
     pub shared_key: [u8; 32],
@@ -58,11 +61,16 @@ pub struct EasyP2PMPOptions {
 
 impl Default for EasyP2PMPOptions {
     fn default() -> Self {
-        EasyP2PMPOptions { bind: String::new() }
+        EasyP2PMPOptions {
+            bind: String::new(),
+        }
     }
 }
 
-pub fn attempt_details(info: Option<&P2PAddressInfo>, sess_ctx: Option<&P2PSessionContext>) -> P2PAttemptDetails {
+pub fn attempt_details(
+    info: Option<&P2PAddressInfo>,
+    sess_ctx: Option<&P2PSessionContext>,
+) -> P2PAttemptDetails {
     let Some(info) = info else {
         return P2PAttemptDetails::default();
     };
@@ -95,9 +103,17 @@ pub fn attempt_details(info: Option<&P2PAddressInfo>, sess_ctx: Option<&P2PSessi
 }
 
 /// detect NAT address info via STUN (DetectNATAddressInfoContext, relay-less).
-async fn detect_nat_address_info(scope: &Scope, networks: &[String], bind: &str) -> Result<Vec<candidates::PunchingAddressInfo>> {
-    crate::p2plog!("    Getting local public IP info via {} STUN servers...", stun::stun_servers().len());
-    let results = stun::get_networks_public_ips(scope, networks, bind, Duration::from_millis(2828)).await;
+async fn detect_nat_address_info(
+    scope: &Scope,
+    networks: &[String],
+    bind: &str,
+) -> Result<Vec<candidates::PunchingAddressInfo>> {
+    crate::p2plog!(
+        "    Getting local public IP info via {} STUN servers...",
+        stun::stun_servers().len()
+    );
+    let results =
+        stun::get_networks_public_ips(scope, networks, bind, Duration::from_millis(2828)).await;
     let all_results = match results {
         Ok(r) => r,
         Err(err) => {
@@ -118,12 +134,26 @@ async fn detect_nat_address_info(scope: &Scope, networks: &[String], bind: &str)
         });
     }
     if !addresses.is_empty() {
-        crate::p2plog!("    Received {} STUN responses", stun::succeeded_stun_results(&all_results));
+        crate::p2plog!(
+            "    Received {} STUN responses",
+            stun::succeeded_stun_results(&all_results)
+        );
         for info in &addresses {
             if info.lan == info.nat {
-                crate::p2plog!("      {:<5}: {} ({})", info.network, info.nat, info.nat_type);
+                crate::p2plog!(
+                    "      {:<5}: {} ({})",
+                    info.network,
+                    info.nat,
+                    info.nat_type
+                );
             } else {
-                crate::p2plog!("      {:<5}: LAN={} | NAT={} ({})", info.network, info.lan, info.nat, info.nat_type);
+                crate::p2plog!(
+                    "      {:<5}: LAN={} | NAT={} ({})",
+                    info.network,
+                    info.lan,
+                    info.nat,
+                    info.nat_type
+                );
             }
         }
     }
@@ -190,7 +220,10 @@ pub async fn do_auto_p2p_ex2(
         return Err(P2pError::msg("operation cancelled"));
     }
 
-    crate::p2plog!("    Exchanging address info with peer via {} MQTT servers...", super::mqtt_broker_servers().len());
+    crate::p2plog!(
+        "    Exchanging address info with peer via {} MQTT servers...",
+        super::mqtt_broker_servers().len()
+    );
     let (remote_payload, _srv_index) = mqtt_signal::secure_exchange_with_session(
         scope,
         signal,
@@ -220,29 +253,39 @@ pub async fn do_auto_p2p_ex2(
     let mut shared_key = [0u8; 32];
     if need_shared_key {
         let Some(kp) = keypair else {
-            return Err(P2pError::msg("missing public key from peer for key exchange"));
+            return Err(P2pError::msg(
+                "missing public key from peer for key exchange",
+            ));
         };
         if remote_payload.pub_key.is_empty() {
-            return Err(P2pError::msg("missing public key from peer for key exchange"));
+            return Err(P2pError::msg(
+                "missing public key from peer for key exchange",
+            ));
         }
         shared_key = kp.shared_key(&remote_payload.pub_key)?;
     }
 
     let local_supports_multi_exit = candidates::has_cap(&my_payload.caps, CAP_MULTI_EXIT_UDP_PUNCH);
-    let peer_supports_multi_exit = candidates::has_cap(&remote_payload.caps, CAP_MULTI_EXIT_UDP_PUNCH);
+    let peer_supports_multi_exit =
+        candidates::has_cap(&remote_payload.caps, CAP_MULTI_EXIT_UDP_PUNCH);
     let peer_supports_lan_probe = candidates::has_cap(&remote_payload.caps, CAP_LAN_PROBE);
-    let peer_supports_canonical = candidates::has_cap(&remote_payload.caps, CAP_CANONICAL_LAN_PROBE);
+    let peer_supports_canonical =
+        candidates::has_cap(&remote_payload.caps, CAP_CANONICAL_LAN_PROBE);
     let local_public_ipv4_count = candidates::count_unique_public_ips(&my_payload.addresses, "4");
     let local_public_ipv6_count = candidates::count_unique_public_ips(&my_payload.addresses, "6");
-    let remote_public_ipv4_count = candidates::count_unique_public_ips(&remote_payload.addresses, "4");
-    let remote_public_ipv6_count = candidates::count_unique_public_ips(&remote_payload.addresses, "6");
+    let remote_public_ipv4_count =
+        candidates::count_unique_public_ips(&remote_payload.addresses, "4");
+    let remote_public_ipv6_count =
+        candidates::count_unique_public_ips(&remote_payload.addresses, "6");
 
     let (lan_probe_candidates, mut built) = candidates::build_base_p2p_candidates(
         &my_payload.addresses,
         &remote_payload.addresses,
         peer_supports_lan_probe,
     );
-    if let Some(selected) = candidates::select_lan_probe_candidate(lan_probe_candidates, peer_supports_canonical) {
+    if let Some(selected) =
+        candidates::select_lan_probe_candidate(lan_probe_candidates, peer_supports_canonical)
+    {
         built.final_results.push(selected);
     }
     if built.final_results.is_empty() {

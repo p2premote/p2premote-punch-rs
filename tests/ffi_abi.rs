@@ -9,14 +9,19 @@ use p2premote_punch::*;
 fn call(f: unsafe extern "C" fn(*const c_char) -> *mut c_char, input: &str) -> String {
     let c_input = CString::new(input).unwrap();
     let raw = unsafe { f(c_input.as_ptr()) };
-    let out = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+    let out = unsafe { CStr::from_ptr(raw) }
+        .to_string_lossy()
+        .into_owned();
     FreeCString(raw);
     out
 }
 
 fn json_str(raw: &str, field: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(raw).unwrap();
-    v.get(field).cloned().unwrap_or(serde_json::Value::Null).to_string()
+    v.get(field)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+        .to_string()
 }
 
 fn json_bool(raw: &str, field: &str) -> bool {
@@ -33,23 +38,36 @@ fn start_udp_tunnel_rejects_invalid_json() {
 
 #[test]
 fn start_udp_tunnel_requires_token() {
-    let raw = call(StartUdpTunnel, r#"{"network":"udp4","timeout_secs":1,"remote_target_port":51820}"#);
+    let raw = call(
+        StartUdpTunnel,
+        r#"{"network":"udp4","timeout_secs":1,"remote_target_port":51820}"#,
+    );
     assert!(!json_bool(&raw, "ok"));
     assert_ne!(json_str(&raw, "error"), "\"\"");
 }
 
 #[test]
 fn start_udp_tunnel_rejects_relay() {
-    let raw = call(StartUdpTunnel, r#"{"token":"tok","network":"udp4","remote_target_port":51820,"allow_relay":true}"#);
+    let raw = call(
+        StartUdpTunnel,
+        r#"{"token":"tok","network":"udp4","remote_target_port":51820,"allow_relay":true}"#,
+    );
     assert!(!json_bool(&raw, "ok"));
 }
 
 #[test]
 fn start_udp_tunnel_rejects_unknown_network() {
-    let raw = call(StartUdpTunnel, r#"{"token":"tok","network":"tcp9","remote_target_port":51820}"#);
+    let raw = call(
+        StartUdpTunnel,
+        r#"{"token":"tok","network":"tcp9","remote_target_port":51820}"#,
+    );
     assert!(!json_bool(&raw, "ok"));
     let err = json_str(&raw, "error");
-    assert!(err.contains("unsupported network"), "unexpected error: {}", err);
+    assert!(
+        err.contains("unsupported network"),
+        "unexpected error: {}",
+        err
+    );
 }
 
 #[test]
@@ -57,10 +75,17 @@ fn start_udp_tunnel_accepts_any_network() {
     // "any" must clear the network gate: pair it with allow_relay so the
     // request still fails offline, but on the relay check (which runs after
     // the network validation).
-    let raw = call(StartUdpTunnel, r#"{"token":"tok","network":"any","remote_target_port":51820,"allow_relay":true}"#);
+    let raw = call(
+        StartUdpTunnel,
+        r#"{"token":"tok","network":"any","remote_target_port":51820,"allow_relay":true}"#,
+    );
     assert!(!json_bool(&raw, "ok"));
     let err = json_str(&raw, "error");
-    assert!(err.contains("relay"), "network gate should accept any, got: {}", err);
+    assert!(
+        err.contains("relay"),
+        "network gate should accept any, got: {}",
+        err
+    );
 }
 
 #[test]
@@ -77,7 +102,9 @@ fn start_udp_tunnel_rejects_unknown_traversal_mode() {
 #[test]
 fn null_input_returns_error_json() {
     let raw = StartUdpTunnel(std::ptr::null());
-    let out = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+    let out = unsafe { CStr::from_ptr(raw) }
+        .to_string_lossy()
+        .into_owned();
     FreeCString(raw);
     assert_eq!(out, r#"{"ok":false,"error":"input is null"}"#);
 }
@@ -96,7 +123,10 @@ fn stop_udp_tunnel_requires_handle_id() {
 
 #[test]
 fn start_subnet_router_rejects_missing_routes() {
-    let raw = call(StartSubnetRouter, r#"{"session_id":59,"peer_device_id":58,"listen_port":51820}"#);
+    let raw = call(
+        StartSubnetRouter,
+        r#"{"session_id":59,"peer_device_id":58,"listen_port":51820}"#,
+    );
     assert!(!json_bool(&raw, "ok"));
     assert!(json_str(&raw, "error").contains("exposed_lan_cidrs"));
 }
@@ -157,7 +187,11 @@ fn wg_capabilities_shape() {
 fn keypair_reports_platform_support_state() {
     let raw = call(GenerateWgKeypair, "");
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    if cfg!(any(target_os = "linux", target_os = "windows", target_os = "macos")) {
+    if cfg!(any(
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "macos"
+    )) {
         // The userspace WG data plane is not ported yet: parity with Go's
         // behavior on platforms without it.
         assert_eq!(v["ok"], serde_json::json!(false));

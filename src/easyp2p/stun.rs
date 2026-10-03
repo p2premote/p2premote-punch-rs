@@ -30,15 +30,13 @@ pub const DEFAULT_STUN_SERVERS: &[&str] = &[
 pub fn stun_servers() -> Vec<String> {
     static VALUE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     VALUE
-        .get_or_init(|| {
-            match std::env::var("P2PREMOTE_STUN_SERVERS") {
-                Ok(v) if !v.trim().is_empty() => v
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>(),
-                _ => DEFAULT_STUN_SERVERS.iter().map(|s| s.to_string()).collect(),
-            }
+        .get_or_init(|| match std::env::var("P2PREMOTE_STUN_SERVERS") {
+            Ok(v) if !v.trim().is_empty() => v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>(),
+            _ => DEFAULT_STUN_SERVERS.iter().map(|s| s.to_string()).collect(),
         })
         .clone()
 }
@@ -60,7 +58,10 @@ pub fn networks_for_stun(network: &str) -> Result<Vec<String>> {
         "tcp" => Ok(vec!["tcp6".into(), "tcp4".into()]),
         "udp" => Ok(vec!["udp6".into(), "udp4".into()]),
         "tcp6" | "tcp4" | "udp6" | "udp4" => Ok(vec![network.to_string()]),
-        _ => Err(P2pError::msg(format!("unsupported network type: '{}'", network))),
+        _ => Err(P2pError::msg(format!(
+            "unsupported network type: '{}'",
+            network
+        ))),
     }
 }
 
@@ -96,10 +97,9 @@ impl UdpMux {
         // fail the bind with EADDRINUSE otherwise (Windows ignores it).
         let socket = netx::tokio_udp(local, true)?;
         let socket = Arc::new(socket);
-        let routes = Arc::new(Mutex::new(HashMap::<
-            SocketAddr,
-            Vec<mpsc::Sender<Vec<u8>>>,
-        >::new()));
+        let routes = Arc::new(Mutex::new(
+            HashMap::<SocketAddr, Vec<mpsc::Sender<Vec<u8>>>>::new(),
+        ));
         // Do not move Arc<UdpMux> into this task. Doing so keeps the STUN
         // socket alive forever, whereas gonc closes its UDPSessionDialer and
         // underlying socket before the puncher re-binds the STUN-discovered
@@ -139,7 +139,12 @@ impl UdpMux {
 
     async fn connect(self: &Arc<Self>, remote: SocketAddr) -> std::io::Result<VirtualUdpConn> {
         let (tx, rx) = mpsc::channel(256);
-        self.routes.lock().unwrap().entry(remote).or_default().push(tx);
+        self.routes
+            .lock()
+            .unwrap()
+            .entry(remote)
+            .or_default()
+            .push(tx);
         // Determine the concrete local IP when bound to the wildcard address
         // (netx.UDPSessionDialer dummies a UDP connect for this).
         let mux_local = self.local_addr();
@@ -236,7 +241,12 @@ impl StunConn {
                 conn.send(data).await?;
                 Ok(())
             }
-            ConnKind::UdpRace { socket, remotes, winner, .. } => {
+            ConnKind::UdpRace {
+                socket,
+                remotes,
+                winner,
+                ..
+            } => {
                 let w = winner.load(Ordering::SeqCst);
                 if w != NO_WINNER {
                     socket.send_to(data, remotes[w]).await?;
@@ -390,7 +400,10 @@ fn validate_nat_ip(nat_ip: IpAddr, server_addr: SocketAddr) -> std::result::Resu
     Ok(())
 }
 
-async fn stun_query(conn: &mut StunConn, deadline: Instant) -> std::result::Result<SocketAddr, String> {
+async fn stun_query(
+    conn: &mut StunConn,
+    deadline: Instant,
+) -> std::result::Result<SocketAddr, String> {
     let mut txid = [0u8; 12];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut txid);
     let request = build_binding_request(&txid);
@@ -429,7 +442,11 @@ async fn stun_query(conn: &mut StunConn, deadline: Instant) -> std::result::Resu
 /// Resolve a STUN target for the network family. Go's
 /// ResolveTCPAddr("tcp6", …) fails when there is no AAAA record — no
 /// cross-family fallback here either.
-async fn resolve_stun_target(host: &str, port: &str, ipv6: bool) -> std::result::Result<SocketAddr, String> {
+async fn resolve_stun_target(
+    host: &str,
+    port: &str,
+    ipv6: bool,
+) -> std::result::Result<SocketAddr, String> {
     use tokio::net::lookup_host;
     let target = format!("{}:{}", host, port);
     let addrs: Vec<SocketAddr> = lookup_host(target)
@@ -509,7 +526,8 @@ async fn dial_stun_conn(
             let mut remotes = Vec::new();
             let mut conns = Vec::new();
             let mut local = local_any();
-            for target_port in std::iter::once(port_str.as_str()).chain(extra_ports.iter().copied()) {
+            for target_port in std::iter::once(port_str.as_str()).chain(extra_ports.iter().copied())
+            {
                 if let Ok(addr) = resolve_stun_target(&host, target_port, is_ipv6).await {
                     if let Ok(conn) = mux.connect(addr).await {
                         local = conn.local_addr();
@@ -598,7 +616,8 @@ pub async fn get_public_ips(
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED)
             }
         } else {
-            host.parse().map_err(|_| P2pError::msg(format!("invalid bind ip: {}", host)))?
+            host.parse()
+                .map_err(|_| P2pError::msg(format!("invalid bind ip: {}", host)))?
         };
         Some(SocketAddr::new(ip, port))
     } else {
@@ -672,12 +691,23 @@ pub async fn get_public_ips(
                 nat,
                 err,
             };
-            let mut conn = match dial_stun_conn(&network_name, &spec_addr, bind_addr, mux_ref.as_ref()).await {
+            let mut conn = match dial_stun_conn(
+                &network_name,
+                &spec_addr,
+                bind_addr,
+                mux_ref.as_ref(),
+            )
+            .await
+            {
                 Ok(conn) => conn,
                 Err(err) => {
                     crate::p2plog!("STUN dial failed [{}]: {}", spec_addr, err);
                     let _ = tx
-                        .send(send(Some(format!("STUN dial failed: {}", err)), String::new(), String::new()))
+                        .send(send(
+                            Some(format!("STUN dial failed: {}", err)),
+                            String::new(),
+                            String::new(),
+                        ))
                         .await;
                     return;
                 }
@@ -695,7 +725,11 @@ pub async fn get_public_ips(
                 Err(err) => {
                     crate::p2plog!("STUN response error [{}]: {}", spec_addr, err);
                     let _ = tx
-                        .send(send(Some(format!("STUN response error: {}", err)), String::new(), String::new()))
+                        .send(send(
+                            Some(format!("STUN response error: {}", err)),
+                            String::new(),
+                            String::new(),
+                        ))
                         .await;
                 }
             }
@@ -792,7 +826,9 @@ pub async fn get_networks_public_ips(
     }
 
     if all_results.is_empty() {
-        return Err(P2pError::msg("no public IP addresses found or all attempts failed"));
+        return Err(P2pError::msg(
+            "no public IP addresses found or all attempts failed",
+        ));
     }
     Ok(all_results)
 }
@@ -830,9 +866,13 @@ pub fn analyze_stun_results(results: &[StunResult]) -> Vec<AnalyzedStunResult> {
     let mut out = Vec::new();
     for key in order {
         let group = &grouped[&key];
-        let lan_port = netx::split_host_port(&key.local).map(|(_, p)| p).unwrap_or_default();
+        let lan_port = netx::split_host_port(&key.local)
+            .map(|(_, p)| p)
+            .unwrap_or_default();
         let first = group[0];
-        let nat_port = netx::split_host_port(&first.nat).map(|(_, p)| p).unwrap_or_default();
+        let nat_port = netx::split_host_port(&first.nat)
+            .map(|(_, p)| p)
+            .unwrap_or_default();
         let mut seen_ports = HashSet::new();
         for r in group {
             if let Some((_, port)) = netx::split_host_port(&r.nat) {
@@ -914,10 +954,9 @@ mod tests {
         // response must decode to the same public port, not 22623 (the value
         // produced when XORing with the cookie's low 16 bits, 0xa442).
         let response = [
-            0x01, 0x01, 0x00, 0x0c, 0x21, 0x12, 0xa4, 0x42,
-            0x09, 0xce, 0xf7, 0xbb, 0xdb, 0x92, 0xeb, 0xf2,
-            0xb7, 0x41, 0x0f, 0xf6, 0x00, 0x20, 0x00, 0x08,
-            0x00, 0x01, 0xfc, 0x1d, 0x54, 0xbd, 0x2e, 0x4f,
+            0x01, 0x01, 0x00, 0x0c, 0x21, 0x12, 0xa4, 0x42, 0x09, 0xce, 0xf7, 0xbb, 0xdb, 0x92,
+            0xeb, 0xf2, 0xb7, 0x41, 0x0f, 0xf6, 0x00, 0x20, 0x00, 0x08, 0x00, 0x01, 0xfc, 0x1d,
+            0x54, 0xbd, 0x2e, 0x4f,
         ];
         let txid: [u8; 12] = response[8..20].try_into().unwrap();
         let parsed = parse_mapped_address(&response, &txid).unwrap();

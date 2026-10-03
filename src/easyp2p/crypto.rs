@@ -68,7 +68,11 @@ pub fn derive_key(salt: &str, uid: &str) -> [u8; 32] {
 }
 
 pub fn topic_from_salt_and_session_uid(topic_salt: &str, session_uid: &str) -> String {
-    format!("{}{}", super::topic_exchange(), derive_key_for_topic(topic_salt, session_uid))
+    format!(
+        "{}{}",
+        super::topic_exchange(),
+        derive_key_for_topic(topic_salt, session_uid)
+    )
 }
 
 /// MQTT_GenerateClientID: "{desc[:2]}-{cidhash[:8]}-{8 random alnum}" (≤23 chars).
@@ -80,7 +84,12 @@ pub fn mqtt_generate_client_id(topic_desc: &str, session_uid: &str) -> String {
         .map(|_| CHARSET[rand::Rng::gen_range(&mut rng, 0..CHARSET.len())] as char)
         .collect();
     let cid_l8 = derive_key_for_topic("mqtt-topic-gonc-cid", session_uid)[..8].to_string();
-    format!("{}-{}-{}", &topic_desc[..2.min(topic_desc.len())], cid_l8, suffix)
+    format!(
+        "{}-{}-{}",
+        &topic_desc[..2.min(topic_desc.len())],
+        cid_l8,
+        suffix
+    )
 }
 
 #[allow(deprecated)]
@@ -108,7 +117,10 @@ pub fn decrypt_aes(key: &[u8; 32], payload: &SecurePayload) -> Result<Vec<u8>> {
         .decode(payload.data.as_bytes())
         .map_err(|e| P2pError::msg(format!("failed to decode data: {}", e)))?;
     cipher
-        .decrypt(Nonce::from_slice(&nonce_bytes), Payload::from(ciphertext.as_slice()))
+        .decrypt(
+            Nonce::from_slice(&nonce_bytes),
+            Payload::from(ciphertext.as_slice()),
+        )
         .map_err(|_| P2pError::msg("aes-gcm decrypt failed"))
 }
 
@@ -244,12 +256,30 @@ mod tests {
 
     #[test]
     fn go_vectors_topics_and_payloads() {
-        assert_eq!(calculate_md5("demo-token-kx"), "6de54b2c7e3b829a818a25f54feb84a1");
-        assert_eq!(derive_key_for_topic("wgvpn-kx/", "demo-token-kx"), "385311916d1473c9");
-        assert_eq!(derive_key_for_topic("gonc-exchange-address", "p2p-token"), "1eaa4255f9986798");
-        assert_eq!(derive_key_for_topic("mqtt-topic-gonc-cid", "p2p-token")[..8], *"611b3d2b");
-        assert_eq!(derive_key_for_payload("p2p-token", true), b"5504bc1f".to_vec());
-        assert_eq!(hex(&derive_key_for_payload("p2p-token", false)), "5504bc1ff686341a");
+        assert_eq!(
+            calculate_md5("demo-token-kx"),
+            "6de54b2c7e3b829a818a25f54feb84a1"
+        );
+        assert_eq!(
+            derive_key_for_topic("wgvpn-kx/", "demo-token-kx"),
+            "385311916d1473c9"
+        );
+        assert_eq!(
+            derive_key_for_topic("gonc-exchange-address", "p2p-token"),
+            "1eaa4255f9986798"
+        );
+        assert_eq!(
+            derive_key_for_topic("mqtt-topic-gonc-cid", "p2p-token")[..8],
+            *"611b3d2b"
+        );
+        assert_eq!(
+            derive_key_for_payload("p2p-token", true),
+            b"5504bc1f".to_vec()
+        );
+        assert_eq!(
+            hex(&derive_key_for_payload("p2p-token", false)),
+            "5504bc1ff686341a"
+        );
         let key = derive_key("mqtt-exchange-gonc-v2.2.0", "uid-123");
         assert_eq!(
             hex(&key),

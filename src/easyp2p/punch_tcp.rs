@@ -6,12 +6,12 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use super::candidates::{self, is_same_lan, P2PAddressInfo};
 use super::netx;
@@ -46,32 +46,35 @@ fn inc_port(port: u16) -> u16 {
     }
 }
 
-/// tcpPunchAckSelector: one winner per side. A failed confirm write does not
-/// consume the slot (Go runs confirm while holding the mutex; the double-check
-/// after our await preserves that outcome).
+/// tcpPunchAckSelector: one winner per side. Server-side confirmation runs while
+/// holding the async mutex, matching Go's trySelect(confirm): only one candidate
+/// can receive the ACK, and a failed confirm write leaves the slot available.
 struct AckSelector {
     selected: Mutex<bool>,
 }
 
 impl AckSelector {
-    fn try_select(&self) -> bool {
-        let mut s = self.selected.lock().unwrap();
+    async fn try_select(&self) -> bool {
+        let mut s = self.selected.lock().await;
         if *s {
             return false;
         }
         *s = true;
         true
     }
-    fn is_selected(&self) -> bool {
-        *self.selected.lock().unwrap()
-    }
-    fn mark_selected(&self) -> bool {
-        let mut s = self.selected.lock().unwrap();
+
+    async fn try_select_with<F, Fut, E>(&self, confirm: F) -> std::result::Result<bool, E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<(), E>>,
+    {
+        let mut s = self.selected.lock().await;
         if *s {
-            return false;
+            return Ok(false);
         }
+        confirm().await?;
         *s = true;
-        true
+        Ok(true)
     }
 }
 
@@ -141,7 +144,7 @@ async fn do_handshake(
         if buf != payload {
             return Err(format!("connection({}) got invalid punchAckPayload", tag));
         }
-        if !sh.selector.try_select() {
+        if !sh.selector.try_select().await {
             return Err(format!("connection({}) not selected", tag));
         }
     } else {
@@ -151,13 +154,12 @@ async fn do_handshake(
         if buf != payload {
             return Err(format!("connection({}) got invalid punchAckPayload", tag));
         }
-        if sh.selector.is_selected() {
-            return Err(format!("connection({}) not selected", tag));
-        }
-        if let Err(e) = write_full(&mut stream, &payload, &sh.stop).await {
-            return Err(format!("connection({}) failed to write: {}", tag, e));
-        }
-        if !sh.selector.mark_selected() {
+        let selected = sh
+            .selector
+            .try_select_with(|| async { write_full(&mut stream, &payload, &sh.stop).await })
+            .await
+            .map_err(|e| format!("connection({}) failed to write: {}", tag, e))?;
+        if !selected {
             return Err(format!("connection({}) not selected", tag));
         }
     }
@@ -250,7 +252,10 @@ async fn run_dial(sh: Arc<PunchShared>, plan: DialPlan, round_scope: Scope) {
     // LANProbeOnly mode).
     if plan.lan_probe_enabled {
         if let Some(lan_target) = plan.lan_target {
-            crate::p2plog!("  ↑ LAN probe: trying direct connect to peer LAN address {} ...", lan_target);
+            crate::p2plog!(
+                "  ↑ LAN probe: trying direct connect to peer LAN address {} ...",
+                lan_target
+            );
             let probe = tokio::spawn(try_connect(
                 sh.clone(),
                 lan_target,
@@ -262,8 +267,10 @@ async fn run_dial(sh: Arc<PunchShared>, plan: DialPlan, round_scope: Scope) {
             if plan.lan_probe_only {
                 let _ = probe.await;
                 if !sh.stop.is_stopped() && !round_scope.expired() {
-                    sh.report_error("LAN probe failed, no other punching method available".to_string())
-                        .await;
+                    sh.report_error(
+                        "LAN probe failed, no other punching method available".to_string(),
+                    )
+                    .await;
                 }
                 return;
             }
@@ -333,7 +340,10 @@ async fn run_dial(sh: Arc<PunchShared>, plan: DialPlan, round_scope: Scope) {
         let mut in_flight: Vec<tokio::task::JoinHandle<bool>> = Vec::new();
         if random_dst_port {
             let ports = p2p::generate_random_ports(random_port_count);
-            crate::p2plog!("  ↑ Trying {} Random Destination Ports concurrently...", ports.len());
+            crate::p2plog!(
+                "  ↑ Trying {} Random Destination Ports concurrently...",
+                ports.len()
+            );
             for port in ports {
                 if port as i32 == plan.orig_remote_port {
                     // avoid the port the peer used to talk to the STUN server
@@ -355,7 +365,10 @@ async fn run_dial(sh: Arc<PunchShared>, plan: DialPlan, round_scope: Scope) {
         }
         if random_src_port {
             let ports = p2p::generate_random_ports(random_port_count);
-            crate::p2plog!("  ↑ Trying {} Random Source Ports concurrently...", random_port_count);
+            crate::p2plog!(
+                "  ↑ Trying {} Random Source Ports concurrently...",
+                random_port_count
+            );
             for port in ports {
                 if port as i32 == plan.orig_local_port {
                     // avoid our own STUN port
@@ -400,7 +413,8 @@ async fn run_dial(sh: Arc<PunchShared>, plan: DialPlan, round_scope: Scope) {
         }
     }
     if !sh.stop.is_stopped() && !round_scope.expired() {
-        sh.report_error("all connection attempts failed".to_string()).await;
+        sh.report_error("all connection attempts failed".to_string())
+            .await;
     }
 }
 
@@ -436,16 +450,20 @@ async fn run_accept(
         };
         let peer_ip = peer.ip();
         let allowed = peer_ip == remote_ip
-            || (same_nat && similar_lan && is_same_lan(&peer_ip.to_string(), &remote_ip.to_string()))
+            || (same_nat
+                && similar_lan
+                && is_same_lan(&peer_ip.to_string(), &remote_ip.to_string()))
             || (same_nat && remote_lan_ip == Some(peer_ip))
             || (lan_probe_enabled
-                && (remote_lan_ip == Some(peer_ip) || is_same_lan(&peer_ip.to_string(), &local_ip.to_string())));
+                && (remote_lan_ip == Some(peer_ip)
+                    || is_same_lan(&peer_ip.to_string(), &local_ip.to_string())));
         if !allowed {
             drop(stream);
             if in_same_lan {
                 continue;
             }
-            sh.report_error(format!("unexpected peer connection from {}", peer_ip)).await;
+            sh.report_error(format!("unexpected peer connection from {}", peer_ip))
+                .await;
             return;
         }
         match do_handshake(&sh, stream, "accept").await {
@@ -513,13 +531,25 @@ pub async fn auto_p2p_tcp_nat_traversal(
 
     // Resolve the four addresses before the +100 shift and remember the ports
     // the random sprays must avoid (they carried STUN traffic).
-    let local_addr_orig: SocketAddr = netx::parse_addr(&info.local_lan)
-        .ok_or_else(|| P2pError::msg(format!("failed to resolve local address: {}", info.local_lan)))?;
+    let local_addr_orig: SocketAddr = netx::parse_addr(&info.local_lan).ok_or_else(|| {
+        P2pError::msg(format!(
+            "failed to resolve local address: {}",
+            info.local_lan
+        ))
+    })?;
     let orig_local_port = local_addr_orig.port() as i32;
-    let local_nat_addr_orig: SocketAddr = netx::parse_addr(&info.local_nat)
-        .ok_or_else(|| P2pError::msg(format!("failed to resolve local address: {}", info.local_nat)))?;
-    let remote_lan_addr_orig: SocketAddr = netx::parse_addr(&info.remote_lan)
-        .ok_or_else(|| P2pError::msg(format!("failed to resolve remote address: {}", info.remote_lan)))?;
+    let local_nat_addr_orig: SocketAddr = netx::parse_addr(&info.local_nat).ok_or_else(|| {
+        P2pError::msg(format!(
+            "failed to resolve local address: {}",
+            info.local_nat
+        ))
+    })?;
+    let remote_lan_addr_orig: SocketAddr = netx::parse_addr(&info.remote_lan).ok_or_else(|| {
+        P2pError::msg(format!(
+            "failed to resolve remote address: {}",
+            info.remote_lan
+        ))
+    })?;
     let (remote_ip_s, remote_port_orig) = netx::split_host_port(&remote_addr_s)
         .ok_or_else(|| P2pError::msg(format!("invalid remote address: {}", remote_addr_s)))?;
     let remote_ip: IpAddr = remote_ip_s
@@ -549,7 +579,9 @@ pub async fn auto_p2p_tcp_nat_traversal(
     }
     let remote_addr: SocketAddr = netx::parse_addr(&remote_addr_s)
         .ok_or_else(|| P2pError::msg(format!("invalid remote address: {}", remote_addr_s)))?;
-    let remote_lan_ip = candidates::extract_ip(&info.remote_lan).parse::<IpAddr>().ok();
+    let remote_lan_ip = candidates::extract_ip(&info.remote_lan)
+        .parse::<IpAddr>()
+        .ok();
 
     let timeout_max = if info.lan_probe_only {
         Duration::from_secs(5)
@@ -573,9 +605,18 @@ pub async fn auto_p2p_tcp_nat_traversal(
             .signal
             .as_ref()
             .ok_or_else(|| P2pError::msg("missing MQTT signal session"))?;
-        p2p::mqtt_p2p_round_sync(scope, session_uid, signal, is_client, round, Duration::from_secs(25))
-            .await
-            .map_err(|e| P2pError::msg(format!("failed to sync P2P round: {}", e)).wrap_unretryable())?;
+        p2p::mqtt_p2p_round_sync(
+            scope,
+            session_uid,
+            signal,
+            is_client,
+            round,
+            Duration::from_secs(25),
+        )
+        .await
+        .map_err(|e| {
+            P2pError::msg(format!("failed to sync P2P round: {}", e)).wrap_unretryable()
+        })?;
     }
 
     super::punch_udp::print_p2p_info(&info);
@@ -586,7 +627,12 @@ pub async fn auto_p2p_tcp_nat_traversal(
             crate::p2plog!("  - {:<14}: enabled", "LAN Probe");
         }
     }
-    crate::p2plog!("  - {:<14}: {} ({}s)", "Timeout", "TCP traversal", timeout_max.as_secs());
+    crate::p2plog!(
+        "  - {:<14}: {} ({}s)",
+        "Timeout",
+        "TCP traversal",
+        timeout_max.as_secs()
+    );
     if is_client {
         crate::p2plog!("  - {:<14}: connect start immediately", "Active Mode");
     } else {
@@ -680,7 +726,10 @@ pub async fn auto_p2p_tcp_nat_traversal(
             if scope.expired() {
                 Err(P2pError::msg("operation cancelled"))
             } else {
-                Err(P2pError::msg(format!("P2P TCP hole punching failed: {}", err)))
+                Err(P2pError::msg(format!(
+                    "P2P TCP hole punching failed: {}",
+                    err
+                )))
             }
         }
         Outcome::Timeout => {
@@ -695,7 +744,12 @@ pub async fn auto_p2p_tcp_nat_traversal(
 
 #[cfg(test)]
 mod tests {
-    use super::inc_port;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use tokio::sync::{Mutex, Notify};
+
+    use super::{inc_port, AckSelector};
 
     #[test]
     fn inc_port_basics() {
@@ -705,5 +759,74 @@ mod tests {
         assert_eq!(inc_port(65436), 1025);
         // 65500+100 = 65600 → 1024 + 65600 % 65535 = 1089
         assert_eq!(inc_port(65500), 1089);
+    }
+
+    #[tokio::test]
+    async fn ack_selector_serializes_confirmation_and_selects_one_winner() {
+        let selector = Arc::new(AckSelector {
+            selected: Mutex::new(false),
+        });
+        let confirm_calls = Arc::new(AtomicUsize::new(0));
+        let first_started = Arc::new(Notify::new());
+        let release_first = Arc::new(Notify::new());
+
+        let first = {
+            let selector = selector.clone();
+            let confirm_calls = confirm_calls.clone();
+            let first_started = first_started.clone();
+            let release_first = release_first.clone();
+            tokio::spawn(async move {
+                selector
+                    .try_select_with(|| async {
+                        confirm_calls.fetch_add(1, Ordering::SeqCst);
+                        first_started.notify_one();
+                        release_first.notified().await;
+                        Ok::<(), ()>(())
+                    })
+                    .await
+            })
+        };
+
+        first_started.notified().await;
+        let second = {
+            let selector = selector.clone();
+            let confirm_calls = confirm_calls.clone();
+            tokio::spawn(async move {
+                selector
+                    .try_select_with(|| async {
+                        confirm_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok::<(), ()>(())
+                    })
+                    .await
+            })
+        };
+
+        tokio::task::yield_now().await;
+        assert_eq!(confirm_calls.load(Ordering::SeqCst), 1);
+
+        release_first.notify_one();
+        assert_eq!(first.await.unwrap(), Ok(true));
+        assert_eq!(second.await.unwrap(), Ok(false));
+        assert_eq!(confirm_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn ack_selector_releases_slot_after_failed_confirmation() {
+        let selector = AckSelector {
+            selected: Mutex::new(false),
+        };
+
+        assert_eq!(
+            selector
+                .try_select_with(|| async { Err::<(), _>("write failed") })
+                .await,
+            Err("write failed")
+        );
+        assert_eq!(
+            selector
+                .try_select_with(|| async { Ok::<(), &str>(()) })
+                .await,
+            Ok(true)
+        );
     }
 }

@@ -109,11 +109,17 @@ fn normalize_traversal_mode(mode: &str) -> Result<&'static str, P2pError> {
         TRAVERSAL_MODE_AUTO => Ok(TRAVERSAL_MODE_AUTO),
         TRAVERSAL_MODE_INTERNET => Ok(TRAVERSAL_MODE_INTERNET),
         TRAVERSAL_MODE_LAN => Ok(TRAVERSAL_MODE_LAN),
-        _ => Err(P2pError::msg(format!("unsupported traversal_mode: {}", mode))),
+        _ => Err(P2pError::msg(format!(
+            "unsupported traversal_mode: {}",
+            mode
+        ))),
     }
 }
 
-fn select_negotiated_traversal(local: &TraversalCapability, remote: &TraversalCapability) -> Result<&'static str, P2pError> {
+fn select_negotiated_traversal(
+    local: &TraversalCapability,
+    remote: &TraversalCapability,
+) -> Result<&'static str, P2pError> {
     if remote.version < 1 {
         return Err(P2pError::msg("peer does not support traversal negotiation"));
     }
@@ -131,7 +137,9 @@ fn select_negotiated_traversal(local: &TraversalCapability, remote: &TraversalCa
             )));
         }
         if !local.supports_lan || !remote.supports_lan {
-            return Err(P2pError::msg("LAN traversal is not supported by both peers"));
+            return Err(P2pError::msg(
+                "LAN traversal is not supported by both peers",
+            ));
         }
         return Ok(SELECTED_TRAVERSAL_LAN);
     }
@@ -158,21 +166,43 @@ async fn exchange_role_payload<T: Serialize + serde::de::DeserializeOwned + 'sta
 
     if role_hint == "active" {
         let (remote, _) = mqtt_signal::secure_exchange_with_session::<T>(
-            scope, &signal, EXMODE_MUTUAL, local, topic_salt, token, timeout, None,
+            scope,
+            &signal,
+            EXMODE_MUTUAL,
+            local,
+            topic_salt,
+            token,
+            timeout,
+            None,
         )
         .await?;
         return Ok(remote);
     }
     if role_hint != "passive" {
-        return Err(P2pError::msg("role_hint is required for coordinated traversal"));
+        return Err(P2pError::msg(
+            "role_hint is required for coordinated traversal",
+        ));
     }
 
     let (remote, broker_index) = mqtt_signal::secure_exchange_with_session::<T>(
-        scope, &signal, EXMODE_WAIT_ONLY, local, topic_salt, token, timeout, None,
+        scope,
+        &signal,
+        EXMODE_WAIT_ONLY,
+        local,
+        topic_salt,
+        token,
+        timeout,
+        None,
     )
     .await?;
     mqtt_signal::mqtt_secure_publish_with_session::<T>(
-        scope, &signal, local, topic_salt, token, timeout, broker_index,
+        scope,
+        &signal,
+        local,
+        topic_salt,
+        token,
+        timeout,
+        broker_index,
     )
     .await?;
     Ok(remote)
@@ -214,14 +244,22 @@ async fn coordinate_traversal_mode(
                 );
                 return Ok(legacy);
             }
-            return Err(P2pError::msg(format!("LAN capability exchange failed: {}", err)));
+            return Err(P2pError::msg(format!(
+                "LAN capability exchange failed: {}",
+                err
+            )));
         }
     };
     match select_negotiated_traversal(&local, &remote) {
-        Ok(selected) => Ok(TraversalDecision { selected_traversal: selected }),
+        Ok(selected) => Ok(TraversalDecision {
+            selected_traversal: selected,
+        }),
         Err(err) => {
             if traversal_mode == TRAVERSAL_MODE_AUTO {
-                crate::p2plog!("Peer traversal capability is incompatible: {}; using Internet P2P", err);
+                crate::p2plog!(
+                    "Peer traversal capability is incompatible: {}; using Internet P2P",
+                    err
+                );
                 return Ok(legacy);
             }
             Err(err)
@@ -245,7 +283,11 @@ async fn establish_internet_udp_p2p(
     let mut exchange_ok_attempt: i32 = 0;
     let mut probe_error: Option<P2pError> = None;
     loop {
-        crate::p2plog!("=== P2P tunnel attempt {}: network={} ===", attempt, network);
+        crate::p2plog!(
+            "=== P2P tunnel attempt {}: network={} ===",
+            attempt,
+            network
+        );
         match p2p::easy_p2p_mp_with_options(
             scope,
             network,
@@ -275,9 +317,15 @@ async fn establish_internet_udp_p2p(
                     probe_error = Some(err.clone());
                 }
                 if err.is_unretryable() {
-                    return (None, attempt, Some(udp_tunnel_error(attempt, &err, &format!(
-                        "failed to establish gonc p2p tunnel on attempt {}", attempt
-                    ))));
+                    return (
+                        None,
+                        attempt,
+                        Some(udp_tunnel_error(
+                            attempt,
+                            &err,
+                            &format!("failed to establish gonc p2p tunnel on attempt {}", attempt),
+                        )),
+                    );
                 }
                 if scope.expired() {
                     let final_err = if exchange_ok_attempt > 0 {
@@ -292,7 +340,9 @@ async fn establish_internet_udp_p2p(
                 }
                 crate::p2plog!(
                     "UDP tunnel P2P attempt {} failed: {}; retrying in {:?}",
-                    attempt, err, RETRY_DELAY
+                    attempt,
+                    err,
+                    RETRY_DELAY
                 );
                 scope.sleep_until_deadline(RETRY_DELAY).await;
             }
@@ -339,22 +389,42 @@ async fn establish_udp_tunnel_p2p(
         .map_err(|e| StartError::plain(e.to_string()))?;
 
     if decision.selected_traversal == SELECTED_TRAVERSAL_INTERNET {
-        let (conn_info, attempts, err) = establish_internet_udp_p2p(scope, network, bind_ip, token).await;
+        let (conn_info, attempts, err) =
+            establish_internet_udp_p2p(scope, network, bind_ip, token).await;
         match conn_info {
             Some(info) => return Ok((info, attempts, decision)),
-            None => return Err(err.unwrap_or_else(|| StartError::plain("failed to establish gonc p2p tunnel"))),
+            None => {
+                return Err(
+                    err.unwrap_or_else(|| StartError::plain("failed to establish gonc p2p tunnel"))
+                )
+            }
         }
     }
 
     // LAN traversal.
     let lan_scope = scope.child(scope.bounded_timeout(Duration::from_secs(20)));
-    let lan_transport = if network.starts_with("tcp") { "tcp" } else { "udp" };
-    let lan_result = lan::easy_p2p_lan(&lan_scope, token, lan_transport, lan_scope.remaining(), role_hint == "passive").await;
+    let lan_transport = if network.starts_with("tcp") {
+        "tcp"
+    } else {
+        "udp"
+    };
+    let lan_result = lan::easy_p2p_lan(
+        &lan_scope,
+        token,
+        lan_transport,
+        lan_scope.remaining(),
+        role_hint == "passive",
+    )
+    .await;
     let local_success = lan_result.is_ok();
     let local_outcome = TraversalOutcome {
         version: 1,
         success: local_success,
-        error: lan_result.as_ref().err().map(|e| e.to_string()).unwrap_or_default(),
+        error: lan_result
+            .as_ref()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default(),
     };
     let remote_outcome = exchange_role_payload(
         scope,
@@ -374,13 +444,22 @@ async fn establish_udp_tunnel_p2p(
 
     if traversal_mode == TRAVERSAL_MODE_LAN {
         if let Err(lan_err) = lan_result {
-            return Err(StartError::plain(format!("LAN traversal failed: {}", lan_err)));
+            return Err(StartError::plain(format!(
+                "LAN traversal failed: {}",
+                lan_err
+            )));
         }
         if let Err(outcome_err) = remote_outcome {
-            return Err(StartError::plain(format!("LAN outcome exchange failed: {}", outcome_err)));
+            return Err(StartError::plain(format!(
+                "LAN outcome exchange failed: {}",
+                outcome_err
+            )));
         }
         if let Ok(remote) = remote_outcome {
-            return Err(StartError::plain(format!("peer LAN traversal failed: {}", remote.error)));
+            return Err(StartError::plain(format!(
+                "peer LAN traversal failed: {}",
+                remote.error
+            )));
         }
     }
 
@@ -388,44 +467,79 @@ async fn establish_udp_tunnel_p2p(
     let decision = TraversalDecision {
         selected_traversal: SELECTED_TRAVERSAL_INTERNET,
     };
-    let (conn_info, attempts, err) = establish_internet_udp_p2p(scope, network, bind_ip, token).await;
+    let (conn_info, attempts, err) =
+        establish_internet_udp_p2p(scope, network, bind_ip, token).await;
     match conn_info {
         Some(info) => Ok((info, attempts, decision)),
-        None => Err(err.unwrap_or_else(|| StartError::plain("failed to establish gonc p2p tunnel"))),
+        None => {
+            Err(err.unwrap_or_else(|| StartError::plain("failed to establish gonc p2p tunnel")))
+        }
     }
 }
 
 // ============ public entry ============
 
-pub async fn start_udp_tunnel(req: UdpTunnelInput, budget: Duration) -> Result<StartUdpTunnelOutcome, StartError> {
+pub async fn start_udp_tunnel(
+    req: UdpTunnelInput,
+    budget: Duration,
+) -> Result<StartUdpTunnelOutcome, StartError> {
     if req.token.is_empty() {
         return Err(StartError::plain("token is required"));
     }
     if !req.role_hint.is_empty() && req.role_hint != "active" && req.role_hint != "passive" {
-        return Err(StartError::plain(format!("unsupported role_hint: {}", req.role_hint)));
+        return Err(StartError::plain(format!(
+            "unsupported role_hint: {}",
+            req.role_hint
+        )));
     }
     let traversal_mode = normalize_traversal_mode(&req.traversal_mode)
         .map_err(|e| StartError::plain(e.to_string()))?;
     if traversal_mode != TRAVERSAL_MODE_INTERNET && req.role_hint.is_empty() {
-        return Err(StartError::plain("role_hint is required for coordinated UDP tunnel capabilities"));
+        return Err(StartError::plain(
+            "role_hint is required for coordinated UDP tunnel capabilities",
+        ));
     }
-    let network = if req.network.is_empty() { "udp4" } else { req.network.as_str() };
+    let network = if req.network.is_empty() {
+        "udp4"
+    } else {
+        req.network.as_str()
+    };
     // NetworksForStun owns the network matrix: udp4/tcp4/udp6/tcp6 plus the
     // aggregate forms any/any4/any6/tcp/udp. "any" probes tcp6+tcp4+udp4 and
     // the forward layer follows whichever transport the punch lands on
     // (P2PConn dispatch), so the tunnel accepts the full matrix here.
     if stun::networks_for_stun(network).is_err() {
-        return Err(StartError::plain(format!("unsupported network for udp tunnel: {}", network)));
+        return Err(StartError::plain(format!(
+            "unsupported network for udp tunnel: {}",
+            network
+        )));
     }
     if req.allow_relay {
-        return Err(StartError::plain("relay is not allowed for wgvpn udp tunnel"));
+        return Err(StartError::plain(
+            "relay is not allowed for wgvpn udp tunnel",
+        ));
     }
-    let local_listen_ip = if req.local_listen_ip.is_empty() { "127.0.0.1" } else { req.local_listen_ip.as_str() };
-    let remote_target_ip = if req.remote_target_ip.is_empty() { "127.0.0.1" } else { req.remote_target_ip.as_str() };
+    let local_listen_ip = if req.local_listen_ip.is_empty() {
+        "127.0.0.1"
+    } else {
+        req.local_listen_ip.as_str()
+    };
+    let remote_target_ip = if req.remote_target_ip.is_empty() {
+        "127.0.0.1"
+    } else {
+        req.remote_target_ip.as_str()
+    };
     if req.remote_target_port <= 0 || req.remote_target_port > 65535 {
-        return Err(StartError::plain(format!("invalid remote_target_port: {}", req.remote_target_port)));
+        return Err(StartError::plain(format!(
+            "invalid remote_target_port: {}",
+            req.remote_target_port
+        )));
     }
-    let timeout_secs = if req.timeout_secs <= 0 { DEFAULT_TUNNEL_TIMEOUT_SECS } else { req.timeout_secs };
+    let timeout_secs = if req.timeout_secs <= 0 {
+        DEFAULT_TUNNEL_TIMEOUT_SECS
+    } else {
+        req.timeout_secs
+    };
     let scope = Scope::from_timeout(budget.min(Duration::from_secs(timeout_secs as u64)));
 
     let (conn_info, attempt, decision) = establish_udp_tunnel_p2p(
@@ -449,7 +563,9 @@ pub async fn start_udp_tunnel(req: UdpTunnelInput, budget: Duration) -> Result<S
     let local_socket = dial_udp_forward(listen_addr, target_addr)
         .await
         .map_err(|e| StartError::plain(format!("dial local udp forward failed: {}", e)))?;
-    let local_actual = local_socket.local_addr().map_err(|e| StartError::plain(e.to_string()))?;
+    let local_actual = local_socket
+        .local_addr()
+        .map_err(|e| StartError::plain(e.to_string()))?;
 
     let selected_network = conn_info
         .networks_used
@@ -501,14 +617,19 @@ async fn dial_udp_forward(
         }
         last_err = Some(std::io::Error::new(
             std::io::ErrorKind::AddrInUse,
-            format!("random local forward port collided with target port {}", target_addr.port()),
+            format!(
+                "random local forward port collided with target port {}",
+                target_addr.port()
+            ),
         ));
         drop(socket);
         if listen_addr.port() != 0 {
             break;
         }
     }
-    Err(last_err.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "udp forward bind failed")))
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "udp forward bind failed")
+    }))
 }
 
 /// copyPackets ×2: local WG endpoint ↔ punched P2P connection. The local side

@@ -73,7 +73,14 @@ impl HelloPayload {
             },
             None => (String::new(), String::new()),
         };
-        (HelloPayload { control, app, param }, salt)
+        (
+            HelloPayload {
+                control,
+                app,
+                param,
+            },
+            salt,
+        )
     }
 
     pub fn set_control_value(&mut self, key: &str, val: &str) {
@@ -133,7 +140,10 @@ pub async fn mqtt_wait_session(
             return Err(P2pError::msg("not the expected message"));
         };
         let tid = tid.to_string();
-        crate::p2plog!("wait: received event, publishing ACK on broker #{}", srv_index);
+        crate::p2plog!(
+            "wait: received event, publishing ACK on broker #{}",
+            srv_index
+        );
         mqtt_signal::mqtt_secure_publish_with_session::<String>(
             scope,
             &signal,
@@ -205,7 +215,12 @@ pub async fn mqtt_hello_session(
 }
 
 /// MqttWait: convenience wrapper that closes the session 5s after returning.
-pub async fn mqtt_wait(scope: &Scope, session_uid: &str, local_ip: &str, timeout: Duration) -> Result<String> {
+pub async fn mqtt_wait(
+    scope: &Scope,
+    session_uid: &str,
+    local_ip: &str,
+    timeout: Duration,
+) -> Result<String> {
     let (tid, signal) = mqtt_wait_session(scope, session_uid, local_ip, timeout).await?;
     tokio::spawn(async move {
         tokio::time::sleep(SESSION_LINGER).await;
@@ -222,7 +237,8 @@ pub async fn mqtt_hello(
     hello_payload: &HelloPayload,
     timeout: Duration,
 ) -> Result<String> {
-    let (tid, signal) = mqtt_hello_session(scope, session_uid, local_ip, hello_payload, timeout).await?;
+    let (tid, signal) =
+        mqtt_hello_session(scope, session_uid, local_ip, hello_payload, timeout).await?;
     tokio::spawn(async move {
         tokio::time::sleep(SESSION_LINGER).await;
         signal.close();

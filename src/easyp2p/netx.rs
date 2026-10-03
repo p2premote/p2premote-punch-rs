@@ -11,7 +11,11 @@ pub const UDP_FORWARD_BUF: usize = 65535;
 /// net.ListenUDP equivalent, optionally with SO_REUSEADDR (netx.ControlUDP).
 /// IPv6 binds are v6-only, mirroring Go's "udp6" sockets.
 pub fn listen_udp(bind: SocketAddr, reuse_addr: bool) -> io::Result<StdUdpSocket> {
-    let domain = if bind.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+    let domain = if bind.is_ipv6() {
+        Domain::IPV6
+    } else {
+        Domain::IPV4
+    };
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
     super::socketprotect::protect_socket_bound(&socket, &bind);
     if reuse_addr {
@@ -82,8 +86,15 @@ pub fn tokio_udp(bind: SocketAddr, reuse_addr: bool) -> io::Result<tokio::net::U
 
 /// CreateUDPConnFromAddr (non-force path): bind local addr then connect to the
 /// remote. Returns a connected tokio UdpSocket.
-pub async fn connected_udp(local: SocketAddr, remote: SocketAddr) -> io::Result<tokio::net::UdpSocket> {
-    let domain = if local.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+pub async fn connected_udp(
+    local: SocketAddr,
+    remote: SocketAddr,
+) -> io::Result<tokio::net::UdpSocket> {
+    let domain = if local.is_ipv6() {
+        Domain::IPV6
+    } else {
+        Domain::IPV4
+    };
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
     super::socketprotect::protect_socket_bound(&socket, &local);
     socket.bind(&socket2::SockAddr::from(local))?;
@@ -98,7 +109,10 @@ pub async fn connected_udp(local: SocketAddr, remote: SocketAddr) -> io::Result<
 
 /// CreateUDPConnFromAddr force path: bind the port on the wildcard address
 /// (the specific IP may already be in use) and connect.
-pub async fn connected_udp_wildcard(local: SocketAddr, remote: SocketAddr) -> io::Result<tokio::net::UdpSocket> {
+pub async fn connected_udp_wildcard(
+    local: SocketAddr,
+    remote: SocketAddr,
+) -> io::Result<tokio::net::UdpSocket> {
     let wildcard = match local {
         SocketAddr::V4(v4) => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, v4.port())),
         SocketAddr::V6(v6) => SocketAddr::V6(std::net::SocketAddrV6::new(
@@ -114,7 +128,11 @@ pub async fn connected_udp_wildcard(local: SocketAddr, remote: SocketAddr) -> io
 /// netx.ControlTCP listen side: SO_REUSEADDR (+ SO_REUSEPORT on unix) TCP
 /// listener for simultaneous-open punching.
 pub fn listen_tcp(bind: SocketAddr, reuse: bool) -> io::Result<TcpListener> {
-    let domain = if bind.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+    let domain = if bind.is_ipv6() {
+        Domain::IPV6
+    } else {
+        Domain::IPV4
+    };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
     #[cfg(target_os = "android")]
     super::socketprotect::protect_socket_bound(&socket, &bind);
@@ -186,7 +204,10 @@ pub fn get_free_port_for(ipv6: bool) -> io::Result<u16> {
             }
         }
     }
-    Err(io::Error::new(io::ErrorKind::AddrInUse, "no free TCP/UDP ports available"))
+    Err(io::Error::new(
+        io::ErrorKind::AddrInUse,
+        "no free TCP/UDP ports available",
+    ))
 }
 
 /// GetFreePort (IPv4 form, the netx.GetFreePort default).
@@ -223,9 +244,8 @@ pub fn parse_addr(addr: &str) -> Option<SocketAddr> {
         return None; // bare IP without port: not a socket address
     }
     addr.parse::<SocketAddr>().ok().or_else(|| {
-        split_host_port(addr).and_then(|(h, p)| {
-            h.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, p))
-        })
+        split_host_port(addr)
+            .and_then(|(h, p)| h.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, p)))
     })
 }
 
@@ -235,7 +255,10 @@ mod tests {
 
     #[test]
     fn split_join_roundtrip() {
-        assert_eq!(split_host_port("1.2.3.4:5678"), Some(("1.2.3.4".into(), 5678)));
+        assert_eq!(
+            split_host_port("1.2.3.4:5678"),
+            Some(("1.2.3.4".into(), 5678))
+        );
         assert_eq!(split_host_port("[::1]:443"), Some(("::1".into(), 443)));
         assert_eq!(join_host_port("::1", 443), "[::1]:443");
         assert_eq!(join_host_port("1.2.3.4", 443), "1.2.3.4:443");
