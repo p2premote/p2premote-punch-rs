@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "evidence_sets": {
+    "empty": [],
+    "easy": [
+      {"network":"udp4","nat_type":"easy"}, {"network":"udp6","nat_type":"easy"},
+      {"network":"tcp4","nat_type":"easy"}, {"network":"tcp6","nat_type":"easy"}
+    ],
+    "hard": [
+      {"network":"udp4","nat_type":"hard"}, {"network":"udp6","nat_type":"hard"},
+      {"network":"tcp4","nat_type":"hard"}, {"network":"tcp6","nat_type":"symm"}
+    ],
+    "unknown": [{"network":"tcp4","nat_type":"unknown"}, {"network":"tcp6","nat_type":"unknown"}],
+    "mixed": [{"network":"udp4","nat_type":"easy"}, {"network":"tcp4","nat_type":"hard"}, {"network":"tcp6","nat_type":"easy"}]
+  },
+  "plan_cases": [
+    {"name":"udp4 first","preferences":{"prefer_ipv6":false,"prefer_tcp":false},"local":"easy","remote":"easy","local_ipv6":null,"remote_ipv6":null,"expected":["udp4","udp6","tcp4","tcp6"]},
+    {"name":"udp6 first","preferences":{"prefer_ipv6":true,"prefer_tcp":false},"local":"easy","remote":"easy","local_ipv6":null,"remote_ipv6":null,"expected":["udp6","udp4","tcp6","tcp4"]},
+    {"name":"tcp4 first","preferences":{"prefer_ipv6":false,"prefer_tcp":true},"local":"easy","remote":"easy","local_ipv6":null,"remote_ipv6":null,"expected":["tcp4","tcp6","udp4","udp6"]},
+    {"name":"tcp6 first","preferences":{"prefer_ipv6":true,"prefer_tcp":true},"local":"easy","remote":"easy","local_ipv6":true,"remote_ipv6":true,"expected":["tcp6","tcp4","udp6","udp4"]},
+    {"name":"unknown preflight preserves udp","preferences":{"prefer_ipv6":true,"prefer_tcp":true},"local":"empty","remote":"empty","local_ipv6":null,"remote_ipv6":null,"expected":["udp6","udp4"]},
+    {"name":"unknown local cannot grant tcp","preferences":{"prefer_ipv6":false,"prefer_tcp":true},"local":"unknown","remote":"easy","local_ipv6":null,"remote_ipv6":true,"expected":["udp4","udp6"]},
+    {"name":"unknown remote cannot grant tcp","preferences":{"prefer_ipv6":true,"prefer_tcp":true},"local":"easy","remote":"unknown","local_ipv6":true,"remote_ipv6":null,"expected":["udp6","udp4"]},
+    {"name":"local ipv6 absent","preferences":{"prefer_ipv6":true,"prefer_tcp":true},"local":"easy","remote":"easy","local_ipv6":false,"remote_ipv6":null,"expected":["tcp4","udp4"]},
+    {"name":"remote ipv6 absent","preferences":{"prefer_ipv6":true,"prefer_tcp":false},"local":"easy","remote":"easy","local_ipv6":true,"remote_ipv6":false,"expected":["udp4","tcp4"]},
+    {"name":"both hard deny tcp","preferences":{"prefer_ipv6":false,"prefer_tcp":true},"local":"hard","remote":"hard","local_ipv6":null,"remote_ipv6":null,"expected":["udp4","udp6"]},
+    {"name":"tcp admission stays on same family","preferences":{"prefer_ipv6":true,"prefer_tcp":true},"local":"mixed","remote":"hard","local_ipv6":null,"remote_ipv6":null,"expected":["tcp6","udp6","udp4"]},
+    {"name":"tcp admission is symmetric","preferences":{"prefer_ipv6":true,"prefer_tcp":true},"local":"hard","remote":"mixed","local_ipv6":null,"remote_ipv6":null,"expected":["tcp6","udp6","udp4"]}
+  ],
+  "budget_cases": [
+    {"local":1,"remote":1,"expected":1},
+    {"local":1,"remote":null,"expected":6},
+    {"local":null,"remote":1,"expected":6},
+    {"local":null,"remote":null,"expected":6},
+    {"local":1,"remote":2,"expected":2},
+    {"local":6,"remote":1,"expected":6},
+    {"local":0,"remote":1,"expected":null},
+    {"local":1,"remote":7,"expected":null}
+  ]
+}
