@@ -604,7 +604,7 @@ pub async fn auto_p2p_tcp_nat_traversal(
         let signal = sess_ctx
             .signal
             .as_ref()
-            .ok_or_else(|| P2pError::msg("missing MQTT signal session"))?;
+            .ok_or_else(|| P2pError::msg("missing signal session"))?;
         p2p::mqtt_p2p_round_sync(
             scope,
             session_uid,
@@ -705,11 +705,14 @@ pub async fn auto_p2p_tcp_nat_traversal(
     };
 
     sh.stop.stop();
-    for (name, task) in [("accept", accept_task), ("dial", dial_task)] {
-        match tokio::time::timeout(Duration::from_millis(500), task).await {
+    for (name, mut task) in [("accept", accept_task), ("dial", dial_task)] {
+        match tokio::time::timeout(Duration::from_millis(500), &mut task).await {
             Ok(Ok(())) => {}
             Ok(Err(join_err)) => crate::p2plog!("punch tcp {} task failed: {}", name, join_err),
-            Err(_) => crate::p2plog!("punch tcp {} task did not finish in grace period", name),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+            }
         }
     }
 

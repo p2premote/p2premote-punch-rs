@@ -3,11 +3,16 @@
 
 use std::time::Duration;
 
+#[cfg(feature = "legacy-mqtt")]
 use super::crypto;
+#[cfg(feature = "legacy-mqtt")]
 use super::mqtt_signal::{self, MqttSignalSession};
-use super::{P2pError, Result, Scope, EXMODE_MUTUAL, EXMODE_PUBLISH_ONLY, EXMODE_WAIT_ONLY};
+use super::{P2pError, Result};
+#[cfg(feature = "legacy-mqtt")]
+use super::{Scope, EXMODE_MUTUAL, EXMODE_PUBLISH_ONLY, EXMODE_WAIT_ONLY};
 
 /// exmode: 0=mutual, 1=wait only, 2=reply after receiving the active peer.
+#[cfg(feature = "legacy-mqtt")]
 pub async fn mqtt_exchange_payload(
     exmode: i32,
     send_data: &str,
@@ -74,4 +79,37 @@ pub async fn mqtt_exchange_payload(
     )
     .await?;
     Ok(recv_data)
+}
+
+#[cfg(not(feature = "legacy-mqtt"))]
+pub async fn mqtt_exchange_payload(
+    _exmode: i32,
+    _send_data: &str,
+    _session_uid: &str,
+    _salt_prefix: &str,
+    _timeout: Duration,
+    _budget: Duration,
+) -> Result<String> {
+    Err(P2pError::msg("legacy_mqtt_disabled"))
+}
+
+pub async fn exchange_with_signal(
+    exmode: i32,
+    send_data: &str,
+    session_uid: &str,
+    timeout: Duration,
+    call: std::sync::Arc<super::signal::SignalCall>,
+) -> Result<String> {
+    if !call.matches_uid(session_uid) || call.call_id() != "wg-config" {
+        return Err(P2pError::msg("signal_context_mismatch"));
+    }
+    call.exchange(
+        exmode,
+        &send_data.to_string(),
+        "wg_config",
+        0,
+        &call.scope(timeout),
+        timeout,
+    )
+    .await
 }

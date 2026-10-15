@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use super::{P2pError, Result};
 
 /// securePayload on the MQTT wire.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurePayload {
     pub nonce: String,
     pub data: String,

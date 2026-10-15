@@ -401,6 +401,42 @@ pub mod api {
 
     use super::{easyp2p, handles, types};
 
+    pub async fn start_udp_tunnel_with_signal(
+        request: types::UdpTunnelInput,
+        budget: Duration,
+        call: std::sync::Arc<easyp2p::signal::SignalCall>,
+    ) -> Result<types::UdpTunnelResult, String> {
+        let tunnel = easyp2p::udp_tunnel::start_udp_tunnel_with_signal(request, budget, Some(call))
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut result = tunnel.result;
+        let stop = tunnel.stop;
+        result.handle_id =
+            handles::register_udp_tunnel(result.clone(), Box::new(move || stop.stop()));
+        Ok(result)
+    }
+
+    pub async fn exchange_with_signal(
+        request: types::ExchangeInput,
+        timeout: Duration,
+        call: std::sync::Arc<easyp2p::signal::SignalCall>,
+    ) -> Result<types::ExchangeResult, String> {
+        let recv_data = easyp2p::exchange::exchange_with_signal(
+            request.exmode,
+            &request.send_data,
+            &request.token,
+            timeout,
+            call,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(types::ExchangeResult {
+            ok: true,
+            recv_data,
+            error: String::new(),
+        })
+    }
+
     /// Start a UDP4 tunnel without crossing the C ABI or creating a nested
     /// runtime. The returned result contains the registered handle ID.
     pub async fn start_udp_tunnel(

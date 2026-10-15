@@ -249,12 +249,12 @@ fn spawn_dispatcher(
     mc: Arc<LanMcast>,
     stop: Arc<crate::easyp2p::CancelToken>,
     key: [u8; 32],
-) -> Dispatch {
+) -> (Dispatch, tokio::task::JoinHandle<()>) {
     let (beacon_tx, beacon_rx) = mpsc::channel(32);
     let (response_tx, response_rx) = mpsc::channel(32);
     let (confirm_tx, confirm_rx) = mpsc::channel(32);
     let (ack_tx, ack_rx) = mpsc::channel(32);
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let mut buf = vec![0u8; 4096];
         loop {
             let received = tokio::select! {
@@ -283,12 +283,15 @@ fn spawn_dispatcher(
             }
         }
     });
-    Dispatch {
-        beacon: beacon_rx,
-        response: response_rx,
-        confirm: confirm_rx,
-        ack: ack_rx,
-    }
+    (
+        Dispatch {
+            beacon: beacon_rx,
+            response: response_rx,
+            confirm: confirm_rx,
+            ack: ack_rx,
+        },
+        task,
+    )
 }
 
 pub async fn lan_discover(
@@ -311,13 +314,13 @@ pub async fn lan_discover(
         ))
     })?);
     let stop = Arc::new(crate::easyp2p::CancelToken::new());
-    let mut dispatch = spawn_dispatcher(mc.clone(), stop.clone(), key);
+    let (mut dispatch, dispatcher) = spawn_dispatcher(mc.clone(), stop.clone(), key);
 
     let (result_tx, mut result_rx) =
         mpsc::channel::<std::result::Result<LanDiscoverResult, P2pError>>(2);
 
     // initiator
-    {
+    let initiator = {
         let mc = mc.clone();
         let mut response = std::mem::replace(&mut dispatch.response, mpsc::channel(1).1);
         let mut ack = std::mem::replace(&mut dispatch.ack, mpsc::channel(1).1);
@@ -342,10 +345,10 @@ pub async fn lan_discover(
             )
             .await;
             let _ = result_tx.send(result).await;
-        });
-    }
+        })
+    };
     // responder
-    {
+    let responder = {
         let mc = mc.clone();
         let mut beacon = dispatch.beacon;
         let mut confirm = dispatch.confirm;
@@ -369,8 +372,8 @@ pub async fn lan_discover(
             )
             .await;
             let _ = result_tx.send(result).await;
-        });
-    }
+        })
+    };
     drop(result_tx);
 
     let outcome = tokio::select! {
@@ -383,6 +386,10 @@ pub async fn lan_discover(
             Err(P2pError::msg("LAN discovery timeout"))
         }
     };
+    for task in [initiator, responder, dispatcher] {
+        task.abort();
+        let _ = task.await;
+    }
     outcome
 }
 

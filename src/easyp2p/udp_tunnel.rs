@@ -22,9 +22,9 @@ fn udp_forward_batch_buffers() -> Vec<Vec<u8>> {
 
 use super::crypto;
 use super::lan;
-use super::mqtt_signal::{self, MqttSignalSession};
 use super::netx;
 use super::p2p::{self, EasyP2PMPOptions, P2PConn, P2PConnInfo};
+use super::signal::{SignalCall, SignalSession};
 use super::stun;
 use super::{CancelToken, P2pError, Scope, EXMODE_MUTUAL, EXMODE_WAIT_ONLY};
 use crate::types::{UdpTunnelInput, UdpTunnelResult};
@@ -160,22 +160,23 @@ async fn exchange_role_payload<T: Serialize + serde::de::DeserializeOwned + 'sta
     topic_salt: &str,
     local: &T,
     timeout: Duration,
+    external: Option<Arc<SignalCall>>,
 ) -> Result<T, P2pError> {
     let client_id = crypto::mqtt_generate_client_id("WT", token);
-    let signal = MqttSignalSession::new(scope, &client_id).await?;
+    let signal = SignalSession::new(scope, &client_id, external).await?;
 
     if role_hint == "active" {
-        let (remote, _) = mqtt_signal::secure_exchange_with_session::<T>(
-            scope,
-            &signal,
-            EXMODE_MUTUAL,
-            local,
-            topic_salt,
-            token,
-            timeout,
-            None,
-        )
-        .await?;
+        let (remote, _) = signal
+            .secure_exchange::<T>(
+                scope,
+                EXMODE_MUTUAL,
+                local,
+                topic_salt,
+                token,
+                timeout,
+                None,
+            )
+            .await?;
         return Ok(remote);
     }
     if role_hint != "passive" {
@@ -184,27 +185,20 @@ async fn exchange_role_payload<T: Serialize + serde::de::DeserializeOwned + 'sta
         ));
     }
 
-    let (remote, broker_index) = mqtt_signal::secure_exchange_with_session::<T>(
-        scope,
-        &signal,
-        EXMODE_WAIT_ONLY,
-        local,
-        topic_salt,
-        token,
-        timeout,
-        None,
-    )
-    .await?;
-    mqtt_signal::mqtt_secure_publish_with_session::<T>(
-        scope,
-        &signal,
-        local,
-        topic_salt,
-        token,
-        timeout,
-        broker_index,
-    )
-    .await?;
+    let (remote, broker_index) = signal
+        .secure_exchange::<T>(
+            scope,
+            EXMODE_WAIT_ONLY,
+            local,
+            topic_salt,
+            token,
+            timeout,
+            None,
+        )
+        .await?;
+    signal
+        .secure_publish::<T>(scope, local, topic_salt, token, timeout, broker_index)
+        .await?;
     Ok(remote)
 }
 
@@ -213,6 +207,7 @@ async fn coordinate_traversal_mode(
     traversal_mode: &str,
     role_hint: &str,
     token: &str,
+    external: Option<Arc<SignalCall>>,
 ) -> Result<TraversalDecision, P2pError> {
     let legacy = TraversalDecision {
         selected_traversal: SELECTED_TRAVERSAL_INTERNET,
@@ -232,12 +227,13 @@ async fn coordinate_traversal_mode(
         "wgvpn-traversal-capability-v1",
         &local,
         scope.bounded_timeout(Duration::from_secs(8)),
+        external.clone(),
     )
     .await
     {
         Ok(remote) => remote,
         Err(err) => {
-            if traversal_mode == TRAVERSAL_MODE_AUTO {
+            if traversal_mode == TRAVERSAL_MODE_AUTO && external.is_none() {
                 crate::p2plog!(
                     "UDP tunnel capability exchange unavailable: {}; using secure Internet P2P for compatibility",
                     err
@@ -255,7 +251,7 @@ async fn coordinate_traversal_mode(
             selected_traversal: selected,
         }),
         Err(err) => {
-            if traversal_mode == TRAVERSAL_MODE_AUTO {
+            if traversal_mode == TRAVERSAL_MODE_AUTO && external.is_none() {
                 crate::p2plog!(
                     "Peer traversal capability is incompatible: {}; using Internet P2P",
                     err
@@ -272,6 +268,7 @@ async fn establish_internet_udp_p2p(
     network: &str,
     bind_ip: &str,
     token: &str,
+    external: Option<Arc<SignalCall>>,
 ) -> (Option<P2PConnInfo>, i32, Option<StartError>) {
     const RETRY_DELAY: Duration = Duration::from_secs(2);
     let mut attempt: i32 = 1;
@@ -288,13 +285,14 @@ async fn establish_internet_udp_p2p(
             attempt,
             network
         );
-        match p2p::easy_p2p_mp_with_options(
+        match p2p::easy_p2p_mp_with_signal(
             scope,
             network,
             token,
             EasyP2PMPOptions {
                 bind: bind_ip.to_string(),
             },
+            external.clone(),
         )
         .await
         {
@@ -316,7 +314,7 @@ async fn establish_internet_udp_p2p(
                     exchange_ok_attempt = attempt;
                     probe_error = Some(err.clone());
                 }
-                if err.is_unretryable() {
+                if err.is_unretryable() || external.is_some() {
                     return (
                         None,
                         attempt,
@@ -383,14 +381,16 @@ async fn establish_udp_tunnel_p2p(
     network: &str,
     bind_ip: &str,
     token: &str,
+    external: Option<Arc<SignalCall>>,
 ) -> Result<(P2PConnInfo, i32, TraversalDecision), StartError> {
-    let decision = coordinate_traversal_mode(scope, traversal_mode, role_hint, token)
-        .await
-        .map_err(|e| StartError::plain(e.to_string()))?;
+    let decision =
+        coordinate_traversal_mode(scope, traversal_mode, role_hint, token, external.clone())
+            .await
+            .map_err(|e| StartError::plain(e.to_string()))?;
 
     if decision.selected_traversal == SELECTED_TRAVERSAL_INTERNET {
         let (conn_info, attempts, err) =
-            establish_internet_udp_p2p(scope, network, bind_ip, token).await;
+            establish_internet_udp_p2p(scope, network, bind_ip, token, external.clone()).await;
         match conn_info {
             Some(info) => return Ok((info, attempts, decision)),
             None => {
@@ -433,6 +433,7 @@ async fn establish_udp_tunnel_p2p(
         "wgvpn-lan-outcome-v1",
         &local_outcome,
         scope.bounded_timeout(Duration::from_secs(22)),
+        external.clone(),
     )
     .await;
 
@@ -468,7 +469,7 @@ async fn establish_udp_tunnel_p2p(
         selected_traversal: SELECTED_TRAVERSAL_INTERNET,
     };
     let (conn_info, attempts, err) =
-        establish_internet_udp_p2p(scope, network, bind_ip, token).await;
+        establish_internet_udp_p2p(scope, network, bind_ip, token, external).await;
     match conn_info {
         Some(info) => Ok((info, attempts, decision)),
         None => {
@@ -482,6 +483,14 @@ async fn establish_udp_tunnel_p2p(
 pub async fn start_udp_tunnel(
     req: UdpTunnelInput,
     budget: Duration,
+) -> Result<StartUdpTunnelOutcome, StartError> {
+    start_udp_tunnel_with_signal(req, budget, None).await
+}
+
+pub async fn start_udp_tunnel_with_signal(
+    req: UdpTunnelInput,
+    budget: Duration,
+    external: Option<Arc<SignalCall>>,
 ) -> Result<StartUdpTunnelOutcome, StartError> {
     if req.token.is_empty() {
         return Err(StartError::plain("token is required"));
@@ -540,7 +549,16 @@ pub async fn start_udp_tunnel(
     } else {
         req.timeout_secs
     };
-    let scope = Scope::from_timeout(budget.min(Duration::from_secs(timeout_secs as u64)));
+    let budget = budget.min(Duration::from_secs(timeout_secs as u64));
+    let scope = match &external {
+        Some(call) => {
+            if !call.matches_uid(&req.token) || !call.call_id().starts_with("network/") {
+                return Err(StartError::plain("signal_context_mismatch"));
+            }
+            call.scope(budget)
+        }
+        None => Scope::from_timeout(budget),
+    };
 
     let (conn_info, attempt, decision) = establish_udp_tunnel_p2p(
         &scope,
@@ -549,8 +567,13 @@ pub async fn start_udp_tunnel(
         network,
         &req.bind_ip,
         &req.token,
+        external,
     )
     .await?;
+
+    if scope.expired() {
+        return Err(StartError::plain("signal_cancelled"));
+    }
 
     let listen_port = req.local_listen_port.max(0) as u16;
     let listen_addr: SocketAddr = format!("{}:{}", local_listen_ip, listen_port)

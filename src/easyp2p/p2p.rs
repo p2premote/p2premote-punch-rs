@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use super::candidates::{self, ExchangeAddressPayload, P2PAddressInfo, P2PAttemptDetails};
 use super::crypto::{self, EcdhKeyPair};
-use super::mqtt_signal::{self, MqttSignalSession};
 use super::punch_tcp;
 use super::punch_udp;
+use super::signal::{SignalCall, SignalSession};
 use super::stun;
 use super::{
     P2pError, Result, Scope, CAP_CANONICAL_LAN_PROBE, CAP_LAN_PROBE, CAP_MULTI_EXIT_UDP_PUNCH,
@@ -18,8 +18,8 @@ use super::{
 
 pub struct P2PSessionContext {
     pub shared_key: [u8; 32],
-    /// None in LAN-only mode (no MQTT signaling); Some for Internet traversal.
-    pub signal: Option<Arc<MqttSignalSession>>,
+    /// None for LAN discovery; an explicitly selected transport otherwise.
+    pub signal: Option<Arc<SignalSession>>,
     pub local_public_ipv4_count: usize,
 }
 
@@ -168,7 +168,7 @@ pub async fn do_auto_p2p_ex2(
     session_uid: &str,
     timeout: Duration,
     need_shared_key: bool,
-    signal: &Arc<MqttSignalSession>,
+    signal: &Arc<SignalSession>,
 ) -> Result<(Vec<P2PAddressInfo>, P2PSessionContext)> {
     if scope.expired() {
         return Err(P2pError::msg("operation cancelled"));
@@ -177,11 +177,11 @@ pub async fn do_auto_p2p_ex2(
     signal
         .prepare_topic(scope, "gonc-exchange-address", session_uid)
         .await
-        .map_err(|e| P2pError::msg(format!("failed to prepare MQTT address topic: {}", e)))?;
+        .map_err(|e| P2pError::msg(format!("failed to prepare address signal: {}", e)))?;
     signal
         .prepare_topic(scope, "gonc-exchange-sync", session_uid)
         .await
-        .map_err(|e| P2pError::msg(format!("failed to prepare MQTT sync topic: {}", e)))?;
+        .map_err(|e| P2pError::msg(format!("failed to prepare sync signal: {}", e)))?;
     if scope.expired() {
         return Err(P2pError::msg("operation cancelled"));
     }
@@ -221,24 +221,24 @@ pub async fn do_auto_p2p_ex2(
     }
 
     crate::p2plog!(
-        "    Exchanging address info with peer via {} MQTT servers...",
-        super::mqtt_broker_servers().len()
+        "    Exchanging address info with peer via {}...",
+        signal.transport()
     );
-    let (remote_payload, _srv_index) = mqtt_signal::secure_exchange_with_session(
-        scope,
-        signal,
-        EXMODE_MUTUAL,
-        &my_payload,
-        "gonc-exchange-address",
-        session_uid,
-        timeout,
-        None,
-    )
-    .await?;
+    let (remote_payload, _srv_index) = signal
+        .secure_exchange(
+            scope,
+            EXMODE_MUTUAL,
+            &my_payload,
+            "gonc-exchange-address",
+            session_uid,
+            timeout,
+            None,
+        )
+        .await?;
 
     crate::p2pevent!(
         "address exchange complete: session={}, broker_index={}, local_addrs={:?}, remote_addrs={:?}, local_caps={:?}, remote_caps={:?}",
-        session_uid,
+        signal.transport(),
         _srv_index,
         my_payload.addresses,
         remote_payload.addresses,
@@ -323,7 +323,7 @@ pub async fn do_auto_p2p_ex2(
     let sorted = candidates::sort_p2p_address_infos(built.final_results);
     crate::p2pevent!(
         "candidate selection: session={}, candidates={:?}, local_public_ipv4_count={}, remote_public_ipv4_count={}, local_public_ipv6_count={}, remote_public_ipv6_count={}",
-        session_uid,
+        signal.transport(),
         sorted,
         local_public_ipv4_count,
         remote_public_ipv4_count,
@@ -337,7 +337,7 @@ pub async fn do_auto_p2p_ex2(
 pub async fn mqtt_p2p_round_sync(
     scope: &Scope,
     session_uid: &str,
-    sess_signal: &Arc<MqttSignalSession>,
+    sess_signal: &Arc<SignalSession>,
     is_client: bool,
     round: i32,
     timeout: Duration,
@@ -351,18 +351,18 @@ pub async fn mqtt_p2p_round_sync(
     let filter_need = msg_need.clone();
     let filter: Arc<dyn Fn(&String) -> std::result::Result<bool, String> + Send + Sync> =
         Arc::new(move |msg: &String| Ok(msg == &filter_need));
-    let (msg_recv, _) = mqtt_signal::secure_exchange_with_session::<String>(
-        scope,
-        sess_signal,
-        EXMODE_MUTUAL,
-        &msg_send,
-        "gonc-exchange-sync",
-        session_uid,
-        timeout,
-        Some(filter),
-    )
-    .await
-    .map_err(|e| P2pError::msg(format!("failed to exchange sync message: {}", e)))?;
+    let (msg_recv, _) = sess_signal
+        .secure_exchange::<String>(
+            scope,
+            EXMODE_MUTUAL,
+            &msg_send,
+            "gonc-exchange-sync",
+            session_uid,
+            timeout,
+            Some(filter),
+        )
+        .await
+        .map_err(|e| P2pError::msg(format!("failed to exchange sync message: {}", e)))?;
     if msg_recv != msg_need {
         return Err(P2pError::msg(format!(
             "expected message '{}', but got '{}'",
@@ -396,14 +396,24 @@ pub async fn easy_p2p_mp_with_options(
     session_uid: &str,
     options: EasyP2PMPOptions,
 ) -> Result<P2PConnInfo> {
+    easy_p2p_mp_with_signal(scope, network, session_uid, options, None).await
+}
+
+pub async fn easy_p2p_mp_with_signal(
+    scope: &Scope,
+    network: &str,
+    session_uid: &str,
+    options: EasyP2PMPOptions,
+    external: Option<Arc<SignalCall>>,
+) -> Result<P2PConnInfo> {
     let networks_to_try_stun = stun::networks_for_stun(network)?;
 
     crate::p2plog!("=== Checking NAT reachability ===");
 
     let client_id = crypto::mqtt_generate_client_id(TOPIC_DESC_SIGNAL, session_uid);
-    let signal = MqttSignalSession::new(scope, &client_id)
+    let signal = SignalSession::new(scope, &client_id, external)
         .await
-        .map_err(|e| P2pError::msg(format!("failed to prepare MQTT signal session: {}", e)))?;
+        .map_err(|e| P2pError::msg(format!("failed to prepare signal session: {}", e)))?;
 
     let (p2p_infos, sess_ctx) = do_auto_p2p_ex2(
         scope,
@@ -442,7 +452,7 @@ pub async fn easy_p2p_mp_with_options(
         round += 1;
         crate::p2pevent!(
             "candidate round start: session={}, round={}, network={}, local_lan={}, local_nat={}({}), remote_lan={}, remote_nat={}({}), lan_probe_only={}, remote_nat_alternatives={:?}",
-            session_uid,
+            signal.transport(),
             round,
             p2p_info.network,
             p2p_info.local_lan,
@@ -501,9 +511,12 @@ pub async fn easy_p2p_mp_with_options(
                 return Ok(conn_info);
             }
             Err(err) => {
+                // A failed signal call ends this attempt; preserve its cause
+                // before cancellation is translated into a generic deadline error.
+                signal.check_failure()?;
                 crate::p2pevent!(
                     "candidate round failed: session={}, round={}, network={}, deadline_expired={}, remaining_ms={}, error={}",
-                    session_uid,
+                    signal.transport(),
                     round,
                     p2p_info.network,
                     scope.expired(),

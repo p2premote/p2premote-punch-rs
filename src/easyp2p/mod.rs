@@ -4,19 +4,22 @@ pub mod candidates;
 pub mod crypto;
 pub mod exchange;
 pub mod lan;
+#[cfg(feature = "legacy-mqtt")]
 pub mod mqtt_signal;
 pub mod netx;
 pub mod p2p;
 pub mod punch_tcp;
 pub mod punch_udp;
+pub mod signal;
 pub mod socketprotect;
 pub mod stun;
 pub mod udp_tunnel;
+#[cfg(feature = "legacy-mqtt")]
 pub mod wake;
 
 // live_tests drive the exported C ABI (StartUdpTunnel/FreeCString), which only
 // exists with the ffi feature.
-#[cfg(all(test, feature = "ffi"))]
+#[cfg(all(test, feature = "ffi", feature = "legacy-mqtt"))]
 mod live_tests;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -247,24 +250,39 @@ impl Default for CancelToken {
 }
 
 /// Deadline-bounded scope derived from a parent (caller) deadline.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Scope {
     pub deadline: Instant,
+    cancel: Option<Arc<CancelToken>>,
 }
 
 impl Scope {
     pub fn from_timeout(timeout: Duration) -> Self {
         Scope {
             deadline: Instant::now() + timeout,
+            cancel: None,
         }
     }
 
     pub fn remaining(&self) -> Duration {
+        if self
+            .cancel
+            .as_ref()
+            .map(|t| t.is_cancelled())
+            .unwrap_or(false)
+        {
+            return Duration::ZERO;
+        }
         self.deadline.saturating_duration_since(Instant::now())
     }
 
     pub fn expired(&self) -> bool {
         Instant::now() >= self.deadline
+            || self
+                .cancel
+                .as_ref()
+                .map(|t| t.is_cancelled())
+                .unwrap_or(false)
     }
 
     /// Child scope bounded by `timeout` but never exceeding this scope.
@@ -272,6 +290,7 @@ impl Scope {
         let candidate = Instant::now() + timeout;
         Scope {
             deadline: candidate.min(self.deadline),
+            cancel: self.cancel.clone(),
         }
     }
 
@@ -285,7 +304,25 @@ impl Scope {
         if target <= Instant::now() {
             return;
         }
-        tokio::time::sleep_until(tokio::time::Instant::from_std(target)).await;
+        tokio::select! {
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(target)) => {},
+            _ = self.cancelled() => {},
+        }
+    }
+
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = self.deadline.min(deadline);
+        self
+    }
+    pub fn with_cancel(mut self, cancel: Arc<CancelToken>) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+    pub async fn cancelled(&self) {
+        match &self.cancel {
+            Some(cancel) => cancel.cancelled().await,
+            None => std::future::pending::<()>().await,
+        }
     }
 }
 

@@ -105,6 +105,11 @@ pub async fn auto_p2p_udp_nat_traversal(
 ) -> Result<(PunchedConn, bool)> {
     let _ = network;
     let punch_payload = super::crypto::derive_key_for_payload(session_uid, true);
+    let signal_log = sess_ctx
+        .signal
+        .as_ref()
+        .map(|s| s.transport())
+        .unwrap_or("lan");
 
     crate::p2plog!("=== Trying P2P Connection ===");
     let is_client = candidates::select_role(p2p_info);
@@ -164,7 +169,7 @@ pub async fn auto_p2p_udp_nat_traversal(
 
     crate::p2pevent!(
         "udp probe plan: session={}, round={}, role={}, route={}, route_reason={}, local_lan={}, local_nat={}({}), remote_lan={}, remote_nat={}({}), random_src_port={}, random_dst_port={}, random_port_count={}, ttl={}, timeout_secs={}, lan_probe={}",
-        session_uid,
+        signal_log,
         round,
         if is_client { "client" } else { "server" },
         remote_addr,
@@ -222,7 +227,7 @@ pub async fn auto_p2p_udp_nat_traversal(
         let signal = sess_ctx
             .signal
             .as_ref()
-            .ok_or_else(|| P2pError::msg("missing MQTT signal session"))?;
+            .ok_or_else(|| P2pError::msg("missing signal session"))?;
         p2p::mqtt_p2p_round_sync(
             scope,
             session_uid,
@@ -271,7 +276,7 @@ pub async fn auto_p2p_udp_nat_traversal(
     let (hole_tx, mut hole_rx) = mpsc::channel::<HoleClaim>(1);
 
     // ---- reader: any source until the punch payload arrives ----
-    let reader = {
+    let mut reader = {
         let ctx = ctx.clone();
         let payload = punch_payload.clone();
         let round_scope = round_scope.clone();
@@ -316,7 +321,7 @@ pub async fn auto_p2p_udp_nat_traversal(
     };
 
     // ---- writer: role-based probing ----
-    let writer = {
+    let mut writer = {
         let ctx = ctx.clone();
         let payload = punch_payload.clone();
         let round_scope = round_scope.clone();
@@ -442,22 +447,28 @@ pub async fn auto_p2p_udp_nat_traversal(
     ctx.stop.stop();
     // Bounded grace period so helper tasks finish their post-pick writes and
     // stop touching the sockets before we connect them.
-    match tokio::time::timeout(Duration::from_millis(500), reader).await {
+    match tokio::time::timeout(Duration::from_millis(500), &mut reader).await {
         Ok(Ok(())) => {}
         Ok(Err(join_err)) => crate::p2plog!("punch reader task failed: {}", join_err),
-        Err(_) => crate::p2plog!("punch reader task did not finish in grace period"),
+        Err(_) => {
+            reader.abort();
+            let _ = reader.await;
+        }
     }
-    match tokio::time::timeout(Duration::from_millis(500), writer).await {
+    match tokio::time::timeout(Duration::from_millis(500), &mut writer).await {
         Ok(Ok(())) => {}
         Ok(Err(join_err)) => crate::p2plog!("punch writer task failed: {}", join_err),
-        Err(_) => crate::p2plog!("punch writer task did not finish in grace period"),
+        Err(_) => {
+            writer.abort();
+            let _ = writer.await;
+        }
     }
 
     let final_result: Result<PunchedConn> = match outcome {
         Outcome::Hole(claim) => {
             crate::p2pevent!(
                 "udp probe outcome: session={}, round={}, outcome=random-source-port-hole, local={}, remote={}, deadline_expired={}",
-                session_uid, round, claim.local, claim.remote, scope.expired()
+                signal_log, round, claim.local, claim.remote, scope.expired()
             );
             if scope.expired() {
                 Err(P2pError::msg("operation cancelled"))
@@ -471,7 +482,7 @@ pub async fn auto_p2p_udp_nat_traversal(
         Outcome::Recv => {
             crate::p2pevent!(
                 "udp probe outcome: session={}, round={}, outcome=main-socket-recv, remote={:?}, deadline_expired={}",
-                session_uid,
+                signal_log,
                 round,
                 *ctx.last_remote.lock().unwrap(),
                 scope.expired()
@@ -493,7 +504,7 @@ pub async fn auto_p2p_udp_nat_traversal(
         Outcome::Err(err) => {
             crate::p2pevent!(
                 "udp probe outcome: session={}, round={}, outcome=socket-error, deadline_expired={}, error={}",
-                session_uid, round, scope.expired(), err
+                signal_log, round, scope.expired(), err
             );
             Err(P2pError::msg(format!(
                 "P2P UDP hole punching failed: {}",
@@ -503,7 +514,7 @@ pub async fn auto_p2p_udp_nat_traversal(
         Outcome::Timeout => {
             crate::p2pevent!(
                 "udp probe outcome: session={}, round={}, outcome=timeout, role={}, route={}, deadline_expired={}, remaining_ms={}",
-                session_uid,
+                signal_log,
                 round,
                 if is_client { "client" } else { "server" },
                 remote_addr,
