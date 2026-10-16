@@ -1,5 +1,6 @@
 //! Application-owned signaling. MQTT remains the legacy backend; an external
 //! session sends through the application's already-authorized WebSocket.
+use crate::error::ErrorCode;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     future::Future,
@@ -76,7 +77,10 @@ impl TransportOffer {
                 .enumerate()
                 .any(|(i, s)| self.supported[..i].contains(s))
         {
-            return Err(P2pError::msg("signal_protocol_invalid"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveInvalidFrame,
+                "signal_protocol_invalid",
+            ));
         }
         Ok(())
     }
@@ -90,7 +94,10 @@ impl TransportOffer {
             if self.supported.iter().any(|s| s == MQTT_TRANSPORT) {
                 return Ok(None);
             }
-            return Err(P2pError::msg("peer_upgrade_required"));
+            return Err(P2pError::new(
+                ErrorCode::SignalTransportSelectPeerUpgradeRequired,
+                "peer_upgrade_required",
+            ));
         };
         peer.validate()?;
         let selected = if traversal_v2
@@ -103,7 +110,10 @@ impl TransportOffer {
         {
             MQTT_TRANSPORT
         } else {
-            return Err(P2pError::msg("peer_upgrade_required"));
+            return Err(P2pError::new(
+                ErrorCode::SignalTransportSelectPeerUpgradeRequired,
+                "peer_upgrade_required",
+            ));
         };
         Ok(Some(TransportSelection {
             version: 1,
@@ -120,21 +130,27 @@ impl TransportOffer {
             if self.supported.iter().any(|s| s == MQTT_TRANSPORT) {
                 return Ok(false);
             }
-            return Err(P2pError::msg("peer_upgrade_required"));
+            return Err(P2pError::new(
+                ErrorCode::SignalTransportSelectPeerUpgradeRequired,
+                "peer_upgrade_required",
+            ));
         };
         if selected.version != 1
             || !self.supported.contains(&selected.selected)
             || !matches!(selected.selected.as_str(), WS_TRANSPORT | MQTT_TRANSPORT)
             || (selected.selected == WS_TRANSPORT && !traversal_v2)
         {
-            return Err(P2pError::msg("signal_protocol_invalid"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveInvalidFrame,
+                "signal_protocol_invalid",
+            ));
         }
         Ok(selected.selected == WS_TRANSPORT)
     }
 }
 
 pub type SendFuture<'a> =
-    Pin<Box<dyn Future<Output = std::result::Result<(), String>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = std::result::Result<(), crate::error::AppError>> + Send + 'a>>;
 /// Success means the server accepted its target send queue, not peer receipt.
 pub trait WireSender: Send + Sync {
     fn send(&self, data: String, deadline: Instant) -> SendFuture<'_>;
@@ -196,7 +212,7 @@ struct CallState {
     received: HashMap<Slot, Value>,
     inbox_count: usize,
     inbox_bytes: usize,
-    failure: Option<String>,
+    failure: Option<P2pError>,
 }
 
 pub struct ExternalSignalSession {
@@ -221,6 +237,15 @@ pub struct SignalCall {
     notify: Notify,
     state: Mutex<CallState>,
     sending: tokio::sync::Semaphore,
+}
+
+fn receive_timeout_code(channel: &str) -> ErrorCode {
+    match channel {
+        "wg_config" => ErrorCode::TraversalKeyExchangeTimeout,
+        "addresses" => ErrorCode::TraversalAddressExchangeTimeout,
+        "traversal_mode" => ErrorCode::TraversalPlanNegotiationTimeout,
+        _ => ErrorCode::TraversalRoundSyncTimeout,
+    }
 }
 
 fn valid_id(id: &str) -> bool {
@@ -256,7 +281,10 @@ impl ExternalSignalSession {
             || identity.peer_device_id <= 0
             || identity.local_device_id == identity.peer_device_id
         {
-            return Err(P2pError::msg("signal_context_mismatch"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "signal_context_mismatch",
+            ));
         }
         Ok(Arc::new(Self {
             identity,
@@ -278,15 +306,24 @@ impl ExternalSignalSession {
             || budget.is_zero()
             || budget > Duration::from_secs(300)
         {
-            return Err(P2pError::msg("signal_context_mismatch"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "signal_context_mismatch",
+            ));
         }
         if self.closed.is_cancelled() {
-            return Err(P2pError::msg("signal_cancelled"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveCancelled,
+                "signal_cancelled",
+            ));
         }
         let mut calls = self.calls.lock().unwrap();
         let mut used = self.used_calls.lock().unwrap();
         if used.contains(call_id) || used.len() >= MAX_CALLS {
-            return Err(P2pError::msg("duplicate_signal_call"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "duplicate_signal_call",
+            ));
         }
         let call = Arc::new(SignalCall {
             identity: self.identity.clone(),
@@ -329,31 +366,50 @@ impl ExternalSignalSession {
     }
     pub fn deliver_json(&self, connection: &str, source: i64, json: &str) -> Result<()> {
         if json.len() > MAX_DATA_BYTES {
-            return Err(P2pError::msg("signal_payload_too_large"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceivePayloadTooLarge,
+                "signal_payload_too_large",
+            ));
         }
-        let wire: WireFrame =
-            serde_json::from_str(json).map_err(|_| P2pError::msg("signal_protocol_invalid"))?;
+        let wire: WireFrame = serde_json::from_str(json).map_err(|_| {
+            P2pError::new(
+                ErrorCode::SignalReceiveInvalidFrame,
+                "signal_protocol_invalid",
+            )
+        })?;
         if wire.kind != "punch_signal" {
-            return Err(P2pError::msg("signal_protocol_invalid"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveInvalidFrame,
+                "signal_protocol_invalid",
+            ));
         }
         self.deliver(connection, source, wire.frame)
     }
     pub fn deliver(&self, connection: &str, source: i64, frame: SignalFrame) -> Result<()> {
         if self.closed.is_cancelled() {
-            return Err(P2pError::msg("stale_signal_frame"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveStaleFrame,
+                "stale_signal_frame",
+            ));
         }
         if connection != self.identity.connection_id
             || source != self.identity.peer_device_id
             || frame.attempt_id != self.identity.attempt_id
         {
-            return Err(P2pError::msg("signal_context_mismatch"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "signal_context_mismatch",
+            ));
         }
         let calls = self.calls.lock().unwrap();
-        let call = calls
-            .get(&frame.call_id)
-            .ok_or_else(|| P2pError::msg("stale_signal_frame"))?;
+        let call = calls.get(&frame.call_id).ok_or_else(|| {
+            P2pError::new(ErrorCode::SignalReceiveStaleFrame, "stale_signal_frame")
+        })?;
         if serde_json::to_vec(&frame)?.len() + 24 > MAX_DATA_BYTES {
-            return Err(P2pError::msg("signal_payload_too_large"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceivePayloadTooLarge,
+                "signal_payload_too_large",
+            ));
         }
         // Serialize ingress across calls so the attempt-wide limits cannot race.
         let (mut messages, mut bytes, mut seen) = (0, 0, 0);
@@ -365,7 +421,7 @@ impl ExternalSignalSession {
         }
         let result = call.deliver(frame, messages, bytes, seen);
         if let Err(error) = &result {
-            call.fail(&error.to_string());
+            call.fail(error);
         }
         result
     }
@@ -396,23 +452,30 @@ impl SignalCall {
     pub fn matches_uid(&self, uid: &str) -> bool {
         self.uid == uid
     }
-    fn fail(&self, error: &str) {
-        self.state.lock().unwrap().failure = Some(error.into());
+    fn fail(&self, error: &P2pError) {
+        self.state
+            .lock()
+            .unwrap()
+            .failure
+            .get_or_insert_with(|| error.clone());
         self.cancel();
     }
     /// Report a signal failure separately from an ordinary native punch timeout.
-    pub fn failure(&self) -> Option<String> {
+    pub fn failure(&self) -> Option<P2pError> {
         self.state.lock().unwrap().failure.clone().or_else(|| {
             (self.cancel.is_cancelled() || self.session_closed.is_cancelled())
-                .then(|| "signal_cancelled".into())
+                .then(|| P2pError::new(ErrorCode::SignalReceiveCancelled, "signal cancelled"))
         })
     }
     fn check(&self) -> Result<()> {
         if let Some(error) = self.failure() {
-            return Err(P2pError::msg(error));
+            return Err(error);
         }
         if Instant::now() >= self.deadline {
-            return Err(P2pError::msg("signal_delivery_timeout"));
+            return Err(P2pError::new(
+                ErrorCode::SignalSendTimeout,
+                "signal_delivery_timeout",
+            ));
         }
         Ok(())
     }
@@ -451,10 +514,16 @@ impl SignalCall {
             || !valid_id(&frame.message_id)
             || !valid_slot(&frame.call_id, &frame.channel, frame.step)
         {
-            return Err(P2pError::msg("signal_protocol_invalid"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveInvalidFrame,
+                "signal_protocol_invalid",
+            ));
         }
         if frame.packet.nonce.len() > 32 || frame.packet.data.len() > MAX_DATA_BYTES {
-            return Err(P2pError::msg("signal_payload_too_large"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceivePayloadTooLarge,
+                "signal_payload_too_large",
+            ));
         }
         use base64::Engine;
         if crypto::b64()
@@ -463,14 +532,28 @@ impl SignalCall {
             .ok()
             != Some(12)
         {
-            return Err(P2pError::msg("signal_protocol_invalid"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveInvalidFrame,
+                "signal_protocol_invalid",
+            ));
         }
-        let plain = crypto::decrypt_aes(&self.key, &frame.packet)
-            .map_err(|_| P2pError::msg("signal_protocol_invalid"))?;
-        let sealed: Sealed =
-            serde_json::from_slice(&plain).map_err(|_| P2pError::msg("signal_protocol_invalid"))?;
+        let plain = crypto::decrypt_aes(&self.key, &frame.packet).map_err(|_| {
+            P2pError::new(
+                ErrorCode::SignalReceiveInvalidFrame,
+                "signal_protocol_invalid",
+            )
+        })?;
+        let sealed: Sealed = serde_json::from_slice(&plain).map_err(|_| {
+            P2pError::new(
+                ErrorCode::SignalReceiveInvalidFrame,
+                "signal_protocol_invalid",
+            )
+        })?;
         if sealed.binding != self.binding(&frame, false) {
-            return Err(P2pError::msg("signal_context_mismatch"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "signal_context_mismatch",
+            ));
         }
         let hash: [u8; 32] =
             Sha256::digest(format!("{}:{}", frame.packet.nonce, frame.packet.data).as_bytes())
@@ -485,17 +568,26 @@ impl SignalCall {
             return if previous == &hash {
                 Ok(())
             } else {
-                Err(P2pError::msg("signal_protocol_invalid"))
+                Err(P2pError::new(
+                    ErrorCode::SignalReceiveInvalidFrame,
+                    "signal_protocol_invalid",
+                ))
             };
         }
         if state.received.contains_key(&slot) || state.inbox.contains_key(&slot) {
-            return Err(P2pError::msg("signal_protocol_invalid"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveInvalidFrame,
+                "signal_protocol_invalid",
+            ));
         }
         if seen_count >= MAX_SEEN
             || inbox_count >= MAX_INBOX_MESSAGES
             || inbox_bytes + bytes > MAX_INBOX_BYTES
         {
-            return Err(P2pError::msg("signal_queue_full"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveQueueFull,
+                "signal_queue_full",
+            ));
         }
         state.seen.insert(frame.message_id, hash);
         state.inbox.entry(slot).or_default().push_back(sealed.value);
@@ -522,8 +614,8 @@ impl SignalCall {
             }
             tokio::select! {
                 _ = &mut notified => {},
-                _ = self.cancel.cancelled() => return self.check().and(Err(P2pError::msg("signal_cancelled"))),
-                _ = tokio::time::sleep_until(deadline.into()) => return Err(P2pError::msg("signal_delivery_timeout")),
+                _ = self.cancel.cancelled() => return self.check().and(Err(P2pError::new(ErrorCode::SignalReceiveCancelled, "signal_cancelled"))),
+                _ = tokio::time::sleep_until(deadline.into()) => return Err(P2pError::new(receive_timeout_code(&slot.channel), "signal receive timeout")),
             }
         }
     }
@@ -532,7 +624,7 @@ impl SignalCall {
         let _permit = self
             .sending
             .try_acquire()
-            .map_err(|_| P2pError::msg("signal_queue_full"))?;
+            .map_err(|_| P2pError::new(ErrorCode::SignalReceiveQueueFull, "signal_queue_full"))?;
         let mut random = [0u8; 16];
         rand::rngs::OsRng.fill_bytes(&mut random);
         let mut frame = SignalFrame {
@@ -557,12 +649,15 @@ impl SignalCall {
             frame,
         })?;
         if data.len() > MAX_DATA_BYTES {
-            return Err(P2pError::msg("signal_payload_too_large"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceivePayloadTooLarge,
+                "signal_payload_too_large",
+            ));
         }
         tokio::select! {
             result = tokio::time::timeout_at(deadline.into(), self.sender.send(data, deadline)) =>
-                result.map_err(|_| P2pError::msg("signal_delivery_timeout"))?.map_err(P2pError::msg),
-            _ = self.cancel.cancelled() => self.check().and(Err(P2pError::msg("signal_cancelled"))),
+                result.map_err(|_| P2pError::new(ErrorCode::SignalSendTimeout, "signal_delivery_timeout"))?.map_err(P2pError::from),
+            _ = self.cancel.cancelled() => self.check().and(Err(P2pError::new(ErrorCode::SignalReceiveCancelled, "signal_cancelled"))),
         }
     }
     pub async fn exchange<T: Serialize + serde::de::DeserializeOwned>(
@@ -578,7 +673,7 @@ impl SignalCall {
             .exchange_inner(mode, value, channel, step, scope, timeout)
             .await;
         if let Err(error) = &result {
-            self.fail(&error.to_string());
+            self.fail(error);
         }
         result
     }
@@ -594,7 +689,10 @@ impl SignalCall {
     ) -> Result<T> {
         self.check()?;
         if !valid_slot(&self.call_id, channel, step) {
-            return Err(P2pError::msg("signal_context_mismatch"));
+            return Err(P2pError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "signal_context_mismatch",
+            ));
         }
         let deadline = (Instant::now() + timeout)
             .min(scope.deadline)
@@ -620,14 +718,29 @@ impl SignalCall {
                     .received
                     .get(&slot)
                     .cloned()
-                    .ok_or_else(|| P2pError::msg("signal_reply_without_request"))?;
+                    .ok_or_else(|| {
+                        P2pError::new(
+                            ErrorCode::SignalReceiveContextMismatch,
+                            "signal_reply_without_request",
+                        )
+                    })?;
                 self.send_value(&slot, serde_json::to_value(value)?, deadline)
                     .await?;
                 remote
             }
-            _ => return Err(P2pError::msg("signal_protocol_invalid")),
+            _ => {
+                return Err(P2pError::new(
+                    ErrorCode::SignalReceiveInvalidFrame,
+                    "signal_protocol_invalid",
+                ))
+            }
         };
-        serde_json::from_value(remote).map_err(|_| P2pError::msg("signal_protocol_invalid"))
+        serde_json::from_value(remote).map_err(|_| {
+            P2pError::new(
+                ErrorCode::SignalReceiveInvalidFrame,
+                "signal_protocol_invalid",
+            )
+        })
     }
 }
 
@@ -642,7 +755,7 @@ impl SignalSession {
     pub(crate) fn check_failure(&self) -> Result<()> {
         match self {
             Self::External(call) => match call.failure() {
-                Some(error) => Err(P2pError::msg(error)),
+                Some(error) => Err(error),
                 None => Ok(()),
             },
             #[cfg(feature = "legacy-mqtt")]
@@ -667,7 +780,10 @@ impl SignalSession {
         #[cfg(not(feature = "legacy-mqtt"))]
         {
             let _ = (scope, client_id);
-            Err(P2pError::msg("legacy_mqtt_disabled"))
+            Err(P2pError::new(
+                ErrorCode::SignalTransportSelectPeerUpgradeRequired,
+                "legacy_mqtt_disabled",
+            ))
         }
     }
     pub fn transport(&self) -> &'static str {
@@ -683,7 +799,10 @@ impl SignalSession {
         match self {
             Self::External(call) => {
                 if !call.matches_uid(uid) {
-                    return Err(P2pError::msg("signal_context_mismatch"));
+                    return Err(P2pError::new(
+                        ErrorCode::SignalReceiveContextMismatch,
+                        "signal_context_mismatch",
+                    ));
                 }
                 call.check()
             }
@@ -712,22 +831,30 @@ impl SignalSession {
             Self::External(call) => {
                 let result: Result<(T, i32)> = async {
                     if !call.matches_uid(uid) {
-                        return Err(P2pError::msg("signal_context_mismatch"));
+                        return Err(P2pError::new(
+                            ErrorCode::SignalReceiveContextMismatch,
+                            "signal_context_mismatch",
+                        ));
                     }
                     let (channel, step) = channel_for(salt, data)?;
                     let value = call
                         .exchange(mode, data, channel, step, scope, timeout)
                         .await?;
                     if let Some(filter) = filter {
-                        if !filter(&value).map_err(P2pError::msg)? {
-                            return Err(P2pError::msg("signal_protocol_invalid"));
+                        if !filter(&value).map_err(|message| {
+                            P2pError::new(ErrorCode::SignalSendDisconnected, message)
+                        })? {
+                            return Err(P2pError::new(
+                                ErrorCode::SignalReceiveInvalidFrame,
+                                "signal_protocol_invalid",
+                            ));
                         }
                     }
                     Ok((value, -1))
                 }
                 .await;
                 if let Err(error) = &result {
-                    call.fail(&error.to_string());
+                    call.fail(error);
                 }
                 result
             }
@@ -767,22 +894,37 @@ fn channel_for<T: Serialize>(salt: &str, data: &T) -> Result<(&'static str, u8)>
         "wgvpn-lan-outcome-v1" => Ok(("lan_outcome", 0)),
         "gonc-exchange-sync" => {
             let value = serde_json::to_value(data)?;
-            let text = value
-                .as_str()
-                .ok_or_else(|| P2pError::msg("signal_protocol_invalid"))?;
+            let text = value.as_str().ok_or_else(|| {
+                P2pError::new(
+                    ErrorCode::SignalReceiveInvalidFrame,
+                    "signal_protocol_invalid",
+                )
+            })?;
             if !matches!(text.as_bytes().first(), Some(b'C') | Some(b'S')) {
-                return Err(P2pError::msg("signal_protocol_invalid"));
+                return Err(P2pError::new(
+                    ErrorCode::SignalReceiveInvalidFrame,
+                    "signal_protocol_invalid",
+                ));
             }
-            let step = text[1..]
-                .parse::<u8>()
-                .map_err(|_| P2pError::msg("signal_protocol_invalid"))?;
+            let step = text[1..].parse::<u8>().map_err(|_| {
+                P2pError::new(
+                    ErrorCode::SignalReceiveInvalidFrame,
+                    "signal_protocol_invalid",
+                )
+            })?;
             if !(1..=5).contains(&step) {
-                return Err(P2pError::msg("signal_protocol_invalid"));
+                return Err(P2pError::new(
+                    ErrorCode::SignalReceiveInvalidFrame,
+                    "signal_protocol_invalid",
+                ));
             }
             Ok(("candidate_sync", step))
         }
         salt if salt.starts_with("wgvpn-kx/") => Ok(("wg_config", 0)),
-        _ => Err(P2pError::msg("signal_protocol_invalid")),
+        _ => Err(P2pError::new(
+            ErrorCode::SignalReceiveInvalidFrame,
+            "signal_protocol_invalid",
+        )),
     }
 }
 
@@ -819,12 +961,15 @@ mod tests {
                     .and_then(|w| w.upgrade())
                     .unwrap();
                 peer.deliver_json("connection", self.source, &data)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| e.app_error())?;
                 if self
                     .lose_ack
                     .swap(false, std::sync::atomic::Ordering::Relaxed)
                 {
-                    Err("signal_server_ack_timeout".into())
+                    Err(crate::error::AppError::new(
+                        ErrorCode::SignalSendTimeout,
+                        "signal_server_ack_timeout",
+                    ))
                 } else {
                     Ok(())
                 }
@@ -1080,7 +1225,10 @@ mod tests {
         let signal = SignalSession::External(call.clone());
         signal.check_failure().unwrap();
         assert!(call.failure().is_none());
-        call.fail("signal_protocol_invalid");
+        call.fail(&P2pError::new(
+            ErrorCode::SignalReceiveInvalidFrame,
+            "signal_protocol_invalid",
+        ));
         assert_eq!(
             signal.check_failure().unwrap_err().to_string(),
             "signal_protocol_invalid"
@@ -1123,7 +1271,10 @@ mod tests {
                 bc.clone()
             )
         );
-        assert!(right.unwrap_err().contains("signal_protocol_invalid"));
+        assert_eq!(
+            right.unwrap_err().code(),
+            ErrorCode::SignalReceiveInvalidFrame
+        );
         assert_eq!(
             bc.check().unwrap_err().to_string(),
             "signal_protocol_invalid"
@@ -1181,7 +1332,10 @@ mod tests {
             a.close();
         };
         let (result, _) = tokio::join!(waiting, cancelling);
-        assert_eq!(result.unwrap_err().to_string(), "signal_cancelled");
+        assert_eq!(
+            result.unwrap_err().code(),
+            ErrorCode::SignalReceiveCancelled
+        );
     }
 
     #[test]

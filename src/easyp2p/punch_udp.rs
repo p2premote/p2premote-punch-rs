@@ -2,6 +2,7 @@
 //! UDP hole punching with low-TTL probes, 600-port birthday spraying and a
 //! payload triple-handshake.
 
+use crate::error::ErrorCode;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -189,13 +190,16 @@ pub async fn auto_p2p_udp_nat_traversal(
     );
 
     let local_addr: SocketAddr = netx::parse_addr(&p2p_info.local_lan).ok_or_else(|| {
-        P2pError::msg(format!(
-            "failed to resolve local address: {}",
-            p2p_info.local_lan
-        ))
+        P2pError::new(
+            ErrorCode::TraversalPunchIoFailed,
+            format!("failed to resolve local address: {}", p2p_info.local_lan),
+        )
     })?;
     let remote_udp_addr: SocketAddr = netx::parse_addr(&remote_addr).ok_or_else(|| {
-        P2pError::msg(format!("failed to resolve remote address: {}", remote_addr))
+        P2pError::new(
+            ErrorCode::TraversalPunchIoFailed,
+            format!("failed to resolve remote address: {}", remote_addr),
+        )
     })?;
 
     // net.ListenUDP: plain bind, no socket options.
@@ -203,15 +207,23 @@ pub async fn auto_p2p_udp_nat_traversal(
     // particular, do not enable SO_REUSEADDR on Windows; sharing this exact
     // STUN-discovered port can make inbound punch packets land on a different
     // socket and also changes the later close-and-rebind semantics.
-    let std_socket = netx::listen_udp(local_addr, false)
-        .map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))?;
+    let std_socket = netx::listen_udp(local_addr, false).map_err(|e| {
+        P2pError::with_source(
+            ErrorCode::TraversalPunchIoFailed,
+            "error binding UDP address",
+            e,
+        )
+    })?;
     std_socket
         .set_nonblocking(true)
-        .map_err(|e| P2pError::msg(e.to_string()))?;
-    let socket = Arc::new(
-        UdpSocket::from_std(std_socket)
-            .map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))?,
-    );
+        .map_err(|e| P2pError::new(ErrorCode::TraversalPunchIoFailed, e.to_string()))?;
+    let socket = Arc::new(UdpSocket::from_std(std_socket).map_err(|e| {
+        P2pError::with_source(
+            ErrorCode::TraversalPunchIoFailed,
+            "error binding UDP address",
+            e,
+        )
+    })?);
     let _ = netx::set_udp_ttl(&socket, ttl);
 
     let ctx = Arc::new(PunchCtx {
@@ -224,10 +236,9 @@ pub async fn auto_p2p_udp_nat_traversal(
     });
 
     if round > 0 {
-        let signal = sess_ctx
-            .signal
-            .as_ref()
-            .ok_or_else(|| P2pError::msg("missing signal session"))?;
+        let signal = sess_ctx.signal.as_ref().ok_or_else(|| {
+            P2pError::new(ErrorCode::TraversalPunchIoFailed, "missing signal session")
+        })?;
         p2p::mqtt_p2p_round_sync(
             scope,
             session_uid,
@@ -237,9 +248,7 @@ pub async fn auto_p2p_udp_nat_traversal(
             Duration::from_secs(25),
         )
         .await
-        .map_err(|e| {
-            P2pError::msg(format!("failed to sync P2P round: {}", e)).wrap_unretryable()
-        })?;
+        .map_err(|e| e.context("failed to sync P2P round"))?;
     }
 
     print_p2p_info(p2p_info);
@@ -471,12 +480,18 @@ pub async fn auto_p2p_udp_nat_traversal(
                 signal_log, round, claim.local, claim.remote, scope.expired()
             );
             if scope.expired() {
-                Err(P2pError::msg("operation cancelled"))
+                Err(scope.interruption(ErrorCode::TraversalPunchTimeout))
             } else {
                 crate::p2plog!("P2P(UDP) connection established (RSP)!");
                 finalize_rsp_conn(claim.local, claim.remote, &punch_payload)
                     .await
-                    .map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))
+                    .map_err(|e| {
+                        P2pError::with_source(
+                            ErrorCode::TraversalPunchIoFailed,
+                            "error binding UDP address",
+                            e,
+                        )
+                    })
             }
         }
         Outcome::Recv => {
@@ -488,7 +503,7 @@ pub async fn auto_p2p_udp_nat_traversal(
                 scope.expired()
             );
             if scope.expired() {
-                Err(P2pError::msg("operation cancelled"))
+                Err(scope.interruption(ErrorCode::TraversalPunchTimeout))
             } else {
                 crate::p2plog!("P2P(UDP) connection established!");
                 let raddr = ctx.last_remote.lock().unwrap().unwrap_or(remote_udp_addr);
@@ -498,7 +513,13 @@ pub async fn auto_p2p_udp_nat_traversal(
                 drop(socket);
                 finalize_main_conn(laddr, raddr, force_rebind, &punch_payload)
                     .await
-                    .map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))
+                    .map_err(|e| {
+                        P2pError::with_source(
+                            ErrorCode::TraversalPunchIoFailed,
+                            "error binding UDP address",
+                            e,
+                        )
+                    })
             }
         }
         Outcome::Err(err) => {
@@ -506,10 +527,10 @@ pub async fn auto_p2p_udp_nat_traversal(
                 "udp probe outcome: session={}, round={}, outcome=socket-error, deadline_expired={}, error={}",
                 signal_log, round, scope.expired(), err
             );
-            Err(P2pError::msg(format!(
-                "P2P UDP hole punching failed: {}",
-                err
-            )))
+            Err(P2pError::new(
+                ErrorCode::TraversalPunchIoFailed,
+                format!("P2P UDP hole punching failed: {}", err),
+            ))
         }
         Outcome::Timeout => {
             crate::p2pevent!(
@@ -522,12 +543,12 @@ pub async fn auto_p2p_udp_nat_traversal(
                 scope.remaining().as_millis()
             );
             if scope.expired() {
-                Err(P2pError::msg("operation cancelled"))
+                Err(scope.interruption(ErrorCode::TraversalPunchTimeout))
             } else {
-                Err(P2pError::msg(format!(
-                    "P2P UDP hole punching failed: timeout ({}s)",
-                    count
-                )))
+                Err(P2pError::new(
+                    ErrorCode::TraversalPunchTimeout,
+                    format!("P2P UDP hole punching failed: timeout ({}s)", count),
+                ))
             }
         }
     };
@@ -962,6 +983,41 @@ async fn bind_rsp_sockets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_probe_timeout_keeps_timeout_code_before_outer_deadline() {
+        let sink = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let remote = sink.local_addr().unwrap().to_string();
+        let local = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let local_addr = local.local_addr().unwrap().to_string();
+        drop(local);
+        let info = P2PAddressInfo {
+            network: "udp4".into(),
+            local_lan: local_addr.clone(),
+            local_nat: local_addr,
+            local_nat_type: "easy".into(),
+            remote_lan: remote.clone(),
+            remote_nat: remote,
+            remote_nat_type: "easy".into(),
+            ..Default::default()
+        };
+        let session = P2PSessionContext {
+            shared_key: [0; 32],
+            signal: None,
+            local_public_ipv4_count: 1,
+        };
+        let scope = Scope::from_timeout(Duration::from_secs(20));
+        let error =
+            auto_p2p_udp_nat_traversal(&scope, "udp4", "timeout-regression", &info, &session, 0)
+                .await
+                .err()
+                .expect("non-responding loopback peer must time out");
+        assert!(
+            !scope.expired(),
+            "the per-probe timeout must precede the outer deadline"
+        );
+        assert_eq!(error.code(), ErrorCode::TraversalPunchTimeout);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn random_source_probe_echoes_and_rebinds_winning_port() {

@@ -80,7 +80,10 @@ pub struct UdpTunnelResult {
     #[serde(skip_serializing_if = "is_zero_i32")]
     pub attempts: i32,
     #[serde(skip_serializing_if = "is_empty_string")]
+    #[serde(rename = "message")]
     pub error: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error_code: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -305,5 +308,8 @@ pub struct ExchangeResult {
     #[serde(default)]
     pub recv_data: String,
     // Go: `json:"error"` without omitempty.
+    #[serde(rename = "message")]
     pub error: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error_code: String,
 }

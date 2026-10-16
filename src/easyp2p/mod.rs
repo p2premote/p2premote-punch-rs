@@ -114,64 +114,59 @@ pub const EXMODE_PUBLISH_ONLY: i32 = 2;
 
 // ============ errors ============
 
-/// Traversal stage an error originated from. Internal diagnostics only:
-/// never rendered into any message and never serialized, so the FFI/JSON
-/// error strings stay byte-identical regardless of this marker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ErrorStage {
-    #[default]
-    Unknown,
-    /// Escaped while exchanging address info with the peer (before any
-    /// candidate probing started).
-    Exchange,
-}
+pub use crate::error::{AppError, ErrorCode};
 
-/// Error with optional traversal diagnostics, mirroring P2PTraversalError /
-/// UnRetryableError from easyp2p/p2p.go.
+/// Failure plus optional socket diagnostics. The business code lives in AppError.
 #[derive(Debug, Clone)]
 pub struct P2pError {
-    message: String,
-    unretryable: bool,
+    error: AppError,
     details: Option<candidates::P2PAttemptDetails>,
-    stage: ErrorStage,
 }
 
 impl P2pError {
-    pub fn msg<S: Into<String>>(message: S) -> Self {
-        P2pError {
-            message: message.into(),
-            unretryable: false,
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            error: AppError::new(code, message),
             details: None,
-            stage: ErrorStage::Unknown,
         }
     }
-
-    pub fn wrap_unretryable(self) -> Self {
-        let mut e = self;
-        e.unretryable = true;
-        e
+    pub fn msg(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::RuntimeExecutionUnclassified, message)
     }
-
-    pub fn with_details(self, details: candidates::P2PAttemptDetails) -> Self {
-        let mut e = self;
-        e.details = Some(details);
-        e
+    pub fn with_source(
+        code: ErrorCode,
+        message: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            error: AppError::with_source(code, message, source),
+            details: None,
+        }
     }
-
-    /// Tag this error as originating from the address-exchange stage.
-    pub(crate) fn at_exchange_stage(mut self) -> Self {
-        self.stage = ErrorStage::Exchange;
+    pub fn context(mut self, message: impl Into<String>) -> Self {
+        self.error = self.error.context(message);
         self
     }
-
-    pub(crate) fn stage(&self) -> ErrorStage {
-        self.stage
+    pub fn code(&self) -> ErrorCode {
+        self.error.code()
     }
-
+    pub fn app_error(&self) -> AppError {
+        self.error.clone()
+    }
+    pub fn with_details(mut self, details: candidates::P2PAttemptDetails) -> Self {
+        self.details = Some(details);
+        self
+    }
     pub fn is_unretryable(&self) -> bool {
-        self.unretryable
+        // A new application network may help, but repeating candidate selection
+        // with the same native network matrix cannot produce a usable pair.
+        self.code().retry_class() != "next_network_or_attempt"
+            || matches!(
+                self.code(),
+                ErrorCode::TraversalCandidateSelectionNoCommonNetwork
+                    | ErrorCode::TraversalCandidateSelectionNoUsableCandidate
+            )
     }
-
     pub fn details(&self) -> Option<&candidates::P2PAttemptDetails> {
         self.details.as_ref()
     }
@@ -179,21 +174,43 @@ impl P2pError {
 
 impl std::fmt::Display for P2pError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
+        self.error.fmt(f)
     }
 }
-
-impl std::error::Error for P2pError {}
-
+impl std::error::Error for P2pError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
 impl From<std::io::Error> for P2pError {
-    fn from(err: std::io::Error) -> Self {
-        P2pError::msg(err.to_string())
+    fn from(error: std::io::Error) -> Self {
+        Self::with_source(
+            ErrorCode::TraversalPunchIoFailed,
+            "network operation failed",
+            error,
+        )
     }
 }
-
+impl From<AppError> for P2pError {
+    fn from(error: AppError) -> Self {
+        Self {
+            error,
+            details: None,
+        }
+    }
+}
+impl From<P2pError> for AppError {
+    fn from(error: P2pError) -> Self {
+        error.error
+    }
+}
 impl From<serde_json::Error> for P2pError {
-    fn from(err: serde_json::Error) -> Self {
-        P2pError::msg(err.to_string())
+    fn from(error: serde_json::Error) -> Self {
+        Self::with_source(
+            ErrorCode::NativeDecodeInvalidPayload,
+            "invalid JSON payload",
+            error,
+        )
     }
 }
 
@@ -257,6 +274,19 @@ pub struct Scope {
 }
 
 impl Scope {
+    pub fn interruption(&self, timeout: ErrorCode) -> P2pError {
+        let code = if self
+            .cancel
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        {
+            ErrorCode::TraversalExecutionCancelled
+        } else {
+            timeout
+        };
+        let message = code.message().to_owned();
+        P2pError::new(code, message)
+    }
     pub fn from_timeout(timeout: Duration) -> Self {
         Scope {
             deadline: Instant::now() + timeout,
@@ -400,19 +430,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exchange_stage_marker_does_not_leak_into_the_message() {
-        let err = P2pError::msg(format!(
-            "failed to exchange address info: {}",
-            P2pError::msg("timeout waiting for remote data exchange on topic x")
-        ))
-        .at_exchange_stage();
-        assert_eq!(err.stage(), ErrorStage::Exchange);
+    fn code_and_stage_survive_context_and_clone() {
+        let err = P2pError::new(ErrorCode::TraversalAddressExchangeTimeout, "any message")
+            .context("address exchange failed");
+        assert_eq!(err.code().stage(), "address_exchange");
         assert_eq!(
-            err.to_string(),
-            "failed to exchange address info: timeout waiting for remote data exchange on topic x"
+            err.clone().code(),
+            ErrorCode::TraversalAddressExchangeTimeout
         );
-        // Wrap-on/wrap-off helpers must preserve the marker.
-        assert_eq!(err.clone().wrap_unretryable().stage(), ErrorStage::Exchange);
-        assert_eq!(P2pError::msg("plain failure").stage(), ErrorStage::Unknown);
+        assert_eq!(
+            crate::error::effective_code(&err),
+            ErrorCode::TraversalAddressExchangeTimeout
+        );
+    }
+    #[test]
+    fn deadline_is_not_user_cancellation() {
+        let scope = Scope::from_timeout(Duration::ZERO);
+        assert_eq!(
+            scope.interruption(ErrorCode::TraversalPunchTimeout).code(),
+            ErrorCode::TraversalPunchTimeout
+        );
+        let token = Arc::new(CancelToken::new());
+        token.cancel();
+        assert_eq!(
+            scope
+                .with_cancel(token)
+                .interruption(ErrorCode::TraversalPunchTimeout)
+                .code(),
+            ErrorCode::TraversalExecutionCancelled
+        );
+    }
+
+    #[test]
+    fn rejected_candidates_allow_another_network_without_repeating_native_selection() {
+        for code in [
+            ErrorCode::TraversalCandidateSelectionNoCommonNetwork,
+            ErrorCode::TraversalCandidateSelectionNoUsableCandidate,
+        ] {
+            assert_eq!(code.retry_class(), "next_network_or_attempt");
+            assert!(P2pError::new(code, "no pair in this network matrix").is_unretryable());
+        }
     }
 }

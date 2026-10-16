@@ -2,6 +2,7 @@
 //! (239.255.255.250:19730, four-step B/R/C/A handshake) used by
 //! traversal_mode=auto/lan.
 
+use crate::error::ErrorCode;
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
@@ -308,10 +309,10 @@ pub async fn lan_discover(
     let punch_port: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
 
     let mc = Arc::new(LanMcast::new().map_err(|e| {
-        P2pError::msg(format!(
-            "bind {}:{}: {}",
-            LAN_MULTICAST_IP, LAN_MULTICAST_PORT, e
-        ))
+        P2pError::new(
+            ErrorCode::TraversalLanProbeFailed,
+            format!("bind {}:{}: {}", LAN_MULTICAST_IP, LAN_MULTICAST_PORT, e),
+        )
     })?);
     let stop = Arc::new(crate::easyp2p::CancelToken::new());
     let (mut dispatch, dispatcher) = spawn_dispatcher(mc.clone(), stop.clone(), key);
@@ -379,11 +380,11 @@ pub async fn lan_discover(
     let outcome = tokio::select! {
         result = result_rx.recv() => {
             stop.cancel();
-            result.unwrap_or_else(|| Err(P2pError::msg("LAN discovery failed")))
+            result.unwrap_or_else(|| Err(P2pError::new(ErrorCode::TraversalLanProbeFailed, "LAN discovery failed")))
         }
         _ = scope.sleep_until_deadline(scope.remaining()) => {
             stop.cancel();
-            Err(P2pError::msg("LAN discovery timeout"))
+            Err(P2pError::new(ErrorCode::TraversalLanProbeTimeout, "LAN discovery timeout"))
         }
     };
     for task in [initiator, responder, dispatcher] {
@@ -414,10 +415,13 @@ fn next_beacon_delay(passive: bool, beacons_sent: u32) -> Duration {
 fn take_punch_port(punch_port: &Arc<Mutex<Option<u16>>>) -> Result<u16> {
     let mut guard = punch_port.lock().unwrap();
     if guard.is_none() {
-        *guard = Some(
-            netx::get_free_port()
-                .map_err(|e| P2pError::msg(format!("allocate LAN punch port: {}", e)))?,
-        );
+        *guard = Some(netx::get_free_port().map_err(|e| {
+            P2pError::with_source(
+                ErrorCode::TraversalLanProbeFailed,
+                "allocate LAN punch port",
+                e,
+            )
+        })?);
     }
     Ok(guard.unwrap())
 }
@@ -457,14 +461,14 @@ async fn lan_initiator(
     // Phase 1: wait for a Response.
     let resp: (LanResponse, SocketAddr) = loop {
         tokio::select! {
-            _ = scope.sleep_until_deadline(scope.remaining()) => return Err(P2pError::msg("LAN discovery timeout")),
+            _ = scope.sleep_until_deadline(scope.remaining()) => return Err(P2pError::new(ErrorCode::TraversalLanProbeTimeout, "LAN discovery timeout")),
             _ = tokio::time::sleep(beacon_delay) => {
                 mc.broadcast(&beacon_data).await;
                 beacons_sent += 1;
                 beacon_delay = next_beacon_delay(passive, beacons_sent);
             }
             pkt = response_rx.recv() => {
-                let Some((msg, src)) = pkt else { return Err(P2pError::msg("LAN discovery failed")) };
+                let Some((msg, src)) = pkt else { return Err(P2pError::new(ErrorCode::TraversalLanProbeFailed, "LAN discovery failed")) };
                 let Some(resp): Option<LanResponse> = lan_unmarshal(&msg) else { continue };
                 if resp.nonce_a != nonce_a { continue; }
                 break (resp, src);
@@ -505,13 +509,13 @@ async fn lan_initiator(
     confirm_ticker.tick().await; // consume immediate tick
     loop {
         tokio::select! {
-            _ = scope.sleep_until_deadline(scope.remaining()) => return Err(P2pError::msg("LAN discovery timeout")),
+            _ = scope.sleep_until_deadline(scope.remaining()) => return Err(P2pError::new(ErrorCode::TraversalLanProbeTimeout, "LAN discovery timeout")),
             _ = confirm_ticker.tick() => {
                 mc.broadcast(&confirm_data).await;
                 mc.send_to(&confirm_data, Some(resp.1)).await;
             }
             pkt = ack_rx.recv() => {
-                let Some((msg, _)) = pkt else { return Err(P2pError::msg("LAN discovery failed")) };
+                let Some((msg, _)) = pkt else { return Err(P2pError::new(ErrorCode::TraversalLanProbeFailed, "LAN discovery failed")) };
                 let Some(ack): Option<LanAck> = lan_unmarshal(&msg) else { continue };
                 if ack.nonce_a != nonce_a { continue; }
                 crate::p2plog!("[LAN] {}: got ACK → discovery complete", role_name);
@@ -543,9 +547,9 @@ async fn lan_responder(
         // Phase 1: wait for a Beacon.
         let (beacon, src, remote_ip, local_ip) = loop {
             tokio::select! {
-                _ = scope.sleep_until_deadline(scope.remaining()) => return Err(P2pError::msg("LAN discovery timeout")),
+                _ = scope.sleep_until_deadline(scope.remaining()) => return Err(P2pError::new(ErrorCode::TraversalLanProbeTimeout, "LAN discovery timeout")),
                 pkt = beacon_rx.recv() => {
-                    let Some((msg, src)) = pkt else { return Err(P2pError::msg("LAN discovery failed")) };
+                    let Some((msg, src)) = pkt else { return Err(P2pError::new(ErrorCode::TraversalLanProbeFailed, "LAN discovery failed")) };
                     let Some(b): Option<LanBeacon> = lan_unmarshal(&msg) else { continue };
                     if b.session_id != sid || self_nonces.lock().unwrap().contains(&b.nonce_a) { continue; }
                     let remote_ip = src.ip().to_string();
@@ -589,14 +593,14 @@ async fn lan_responder(
 
         let confirmed: Option<(LanConfirm, SocketAddr)> = loop {
             tokio::select! {
-                _ = scope.sleep_until_deadline(scope.remaining()) => return Err(P2pError::msg("LAN discovery timeout")),
+                _ = scope.sleep_until_deadline(scope.remaining()) => return Err(P2pError::new(ErrorCode::TraversalLanProbeTimeout, "LAN discovery timeout")),
                 _ = &mut confirm_deadline => break None,
                 _ = resp_ticker.tick() => {
                     mc.broadcast(&resp_data).await;
                     mc.send_to(&resp_data, Some(src)).await;
                 }
                 pkt = confirm_rx.recv() => {
-                    let Some((msg, csrc)) = pkt else { return Err(P2pError::msg("LAN discovery failed")) };
+                    let Some((msg, csrc)) = pkt else { return Err(P2pError::new(ErrorCode::TraversalLanProbeFailed, "LAN discovery failed")) };
                     let Some(confirm): Option<LanConfirm> = lan_unmarshal(&msg) else { continue };
                     if confirm.nonce_b != nonce_b { continue; }
                     break Some((confirm, csrc));
@@ -687,7 +691,7 @@ pub async fn easy_p2p_lan(
             .await
             .map(|(conn, role)| (P2PConn::Udp(conn), role))
     }
-    .map_err(|e| P2pError::msg(format!("LAN traversal: {}", e)))?;
+    .map_err(|e| P2pError::with_source(ErrorCode::TraversalLanProbeFailed, "LAN traversal", e))?;
 
     Ok(super::p2p::P2PConnInfo {
         peer_address: conn.remote_addr(),

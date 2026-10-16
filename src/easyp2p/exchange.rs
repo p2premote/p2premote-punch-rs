@@ -1,6 +1,7 @@
 //! Port of MQTT_ExchangePayload (easyp2p/p2p.go:2805) — the WGVPN key/IP
 //! exchange FFI ("wgvpn-kx/" salt prefix).
 
+use crate::error::ErrorCode;
 use std::time::Duration;
 
 #[cfg(feature = "legacy-mqtt")]
@@ -22,13 +23,16 @@ pub async fn mqtt_exchange_payload(
     budget: Duration,
 ) -> Result<String> {
     if session_uid.is_empty() {
-        return Err(P2pError::msg("sessionUid is required"));
+        return Err(P2pError::new(
+            ErrorCode::TraversalAddressExchangeInvalidPayload,
+            "sessionUid is required",
+        ));
     }
     if !(EXMODE_MUTUAL..=EXMODE_PUBLISH_ONLY).contains(&exmode) {
-        return Err(P2pError::msg(format!(
-            "unsupported exchange mode: {}",
-            exmode
-        )));
+        return Err(P2pError::new(
+            ErrorCode::TraversalAddressExchangeInvalidPayload,
+            format!("unsupported exchange mode: {}", exmode),
+        ));
     }
 
     let topic_salt = format!(
@@ -90,7 +94,10 @@ pub async fn mqtt_exchange_payload(
     _timeout: Duration,
     _budget: Duration,
 ) -> Result<String> {
-    Err(P2pError::msg("legacy_mqtt_disabled"))
+    Err(P2pError::new(
+        ErrorCode::SignalTransportSelectPeerUpgradeRequired,
+        "legacy_mqtt_disabled",
+    ))
 }
 
 pub async fn exchange_with_signal(
@@ -101,7 +108,10 @@ pub async fn exchange_with_signal(
     call: std::sync::Arc<super::signal::SignalCall>,
 ) -> Result<String> {
     if !call.matches_uid(session_uid) || call.call_id() != "wg-config" {
-        return Err(P2pError::msg("signal_context_mismatch"));
+        return Err(P2pError::new(
+            ErrorCode::SignalReceiveContextMismatch,
+            "signal_context_mismatch",
+        ));
     }
     call.exchange(
         exmode,

@@ -4,6 +4,7 @@
 //! three-layer connection convergence: per-side ACK selector → C-side closed
 //! loop → single commit.
 
+use crate::error::ErrorCode;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -494,7 +495,7 @@ pub async fn auto_p2p_tcp_nat_traversal(
     let _ = network;
     crate::p2plog!("=== Trying P2P Connection ===");
     if scope.expired() {
-        return Err(P2pError::msg("operation cancelled"));
+        return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
     }
 
     let is_client = candidates::select_role(p2p_info);
@@ -532,35 +533,44 @@ pub async fn auto_p2p_tcp_nat_traversal(
     // Resolve the four addresses before the +100 shift and remember the ports
     // the random sprays must avoid (they carried STUN traffic).
     let local_addr_orig: SocketAddr = netx::parse_addr(&info.local_lan).ok_or_else(|| {
-        P2pError::msg(format!(
-            "failed to resolve local address: {}",
-            info.local_lan
-        ))
+        P2pError::new(
+            ErrorCode::TraversalPunchIoFailed,
+            format!("failed to resolve local address: {}", info.local_lan),
+        )
     })?;
     let orig_local_port = local_addr_orig.port() as i32;
     let local_nat_addr_orig: SocketAddr = netx::parse_addr(&info.local_nat).ok_or_else(|| {
-        P2pError::msg(format!(
-            "failed to resolve local address: {}",
-            info.local_nat
-        ))
+        P2pError::new(
+            ErrorCode::TraversalPunchIoFailed,
+            format!("failed to resolve local address: {}", info.local_nat),
+        )
     })?;
     let remote_lan_addr_orig: SocketAddr = netx::parse_addr(&info.remote_lan).ok_or_else(|| {
-        P2pError::msg(format!(
-            "failed to resolve remote address: {}",
-            info.remote_lan
-        ))
+        P2pError::new(
+            ErrorCode::TraversalPunchIoFailed,
+            format!("failed to resolve remote address: {}", info.remote_lan),
+        )
     })?;
-    let (remote_ip_s, remote_port_orig) = netx::split_host_port(&remote_addr_s)
-        .ok_or_else(|| P2pError::msg(format!("invalid remote address: {}", remote_addr_s)))?;
-    let remote_ip: IpAddr = remote_ip_s
-        .parse()
-        .map_err(|_| P2pError::msg(format!("invalid remote address: {}", remote_addr_s)))?;
+    let (remote_ip_s, remote_port_orig) =
+        netx::split_host_port(&remote_addr_s).ok_or_else(|| {
+            P2pError::new(
+                ErrorCode::TraversalPunchIoFailed,
+                format!("invalid remote address: {}", remote_addr_s),
+            )
+        })?;
+    let remote_ip: IpAddr = remote_ip_s.parse().map_err(|_| {
+        P2pError::new(
+            ErrorCode::TraversalPunchIoFailed,
+            format!("invalid remote address: {}", remote_addr_s),
+        )
+    })?;
     let orig_remote_port = remote_port_orig as i32;
 
     let mut local_addr = local_addr_orig;
     if !in_same_lan {
         if info.local_nat_type != "easy" && info.remote_nat_type != "easy" && !lan_probe_enabled {
-            return Err(P2pError::msg(
+            return Err(P2pError::new(
+                ErrorCode::TraversalPunchIoFailed,
                 "NAT type need at least one easy NAT for TCP hole punching",
             ));
         }
@@ -577,8 +587,12 @@ pub async fn auto_p2p_tcp_nat_traversal(
         remote_addr_s = netx::join_host_port(&remote_ip_s, inc_port(remote_port_orig));
         info.remote_nat = remote_addr_s.clone();
     }
-    let remote_addr: SocketAddr = netx::parse_addr(&remote_addr_s)
-        .ok_or_else(|| P2pError::msg(format!("invalid remote address: {}", remote_addr_s)))?;
+    let remote_addr: SocketAddr = netx::parse_addr(&remote_addr_s).ok_or_else(|| {
+        P2pError::new(
+            ErrorCode::TraversalPunchIoFailed,
+            format!("invalid remote address: {}", remote_addr_s),
+        )
+    })?;
     let remote_lan_ip = candidates::extract_ip(&info.remote_lan)
         .parse::<IpAddr>()
         .ok();
@@ -592,19 +606,20 @@ pub async fn auto_p2p_tcp_nat_traversal(
     };
 
     // Listener is bound before the round sync (Go order).
-    let std_listener = netx::listen_tcp(local_addr, true)
-        .map_err(|e| P2pError::msg(format!("failed to listen: {}", e)))?;
+    let std_listener = netx::listen_tcp(local_addr, true).map_err(|e| {
+        P2pError::with_source(ErrorCode::TraversalPunchIoFailed, "failed to listen", e)
+    })?;
     std_listener
         .set_nonblocking(true)
-        .map_err(|e| P2pError::msg(e.to_string()))?;
-    let listener = TcpListener::from_std(std_listener)
-        .map_err(|e| P2pError::msg(format!("failed to listen: {}", e)))?;
+        .map_err(|e| P2pError::new(ErrorCode::TraversalPunchIoFailed, e.to_string()))?;
+    let listener = TcpListener::from_std(std_listener).map_err(|e| {
+        P2pError::with_source(ErrorCode::TraversalPunchIoFailed, "failed to listen", e)
+    })?;
 
     if round > 0 {
-        let signal = sess_ctx
-            .signal
-            .as_ref()
-            .ok_or_else(|| P2pError::msg("missing signal session"))?;
+        let signal = sess_ctx.signal.as_ref().ok_or_else(|| {
+            P2pError::new(ErrorCode::TraversalPunchIoFailed, "missing signal session")
+        })?;
         p2p::mqtt_p2p_round_sync(
             scope,
             session_uid,
@@ -614,9 +629,7 @@ pub async fn auto_p2p_tcp_nat_traversal(
             Duration::from_secs(25),
         )
         .await
-        .map_err(|e| {
-            P2pError::msg(format!("failed to sync P2P round: {}", e)).wrap_unretryable()
-        })?;
+        .map_err(|e| e.context("failed to sync P2P round"))?;
     }
 
     super::punch_udp::print_p2p_info(&info);
@@ -719,7 +732,7 @@ pub async fn auto_p2p_tcp_nat_traversal(
     match outcome {
         Outcome::Conn(conn) => {
             if scope.expired() {
-                Err(P2pError::msg("operation cancelled"))
+                Err(scope.interruption(ErrorCode::TraversalPunchTimeout))
             } else {
                 crate::p2plog!("P2P(TCP) connection established!");
                 Ok((conn, is_client))
@@ -727,19 +740,22 @@ pub async fn auto_p2p_tcp_nat_traversal(
         }
         Outcome::Err(err) => {
             if scope.expired() {
-                Err(P2pError::msg("operation cancelled"))
+                Err(scope.interruption(ErrorCode::TraversalPunchTimeout))
             } else {
-                Err(P2pError::msg(format!(
-                    "P2P TCP hole punching failed: {}",
-                    err
-                )))
+                Err(P2pError::new(
+                    ErrorCode::TraversalPunchIoFailed,
+                    format!("P2P TCP hole punching failed: {}", err),
+                ))
             }
         }
         Outcome::Timeout => {
             if scope.expired() {
-                Err(P2pError::msg("operation cancelled"))
+                Err(scope.interruption(ErrorCode::TraversalPunchTimeout))
             } else {
-                Err(P2pError::msg("P2P TCP hole punching failed: Timeout"))
+                Err(P2pError::new(
+                    ErrorCode::TraversalPunchTimeout,
+                    "P2P TCP hole punching failed: Timeout",
+                ))
             }
         }
     }

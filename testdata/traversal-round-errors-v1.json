@@ -1,0 +1,13 @@
+{
+  "cases": [
+    {"name":"local_bind_failure_stops", "local":"traversal.local_forward.io_failed", "peer":"traversal.punch.timeout", "selected":"traversal.local_forward.io_failed", "advance":false},
+    {"name":"peer_bind_failure_stops", "local":"traversal.punch.timeout", "peer":"traversal.local_forward.io_failed", "selected":"traversal.local_forward.io_failed", "advance":false},
+    {"name":"timeout_allows_next_network", "local":"traversal.punch.timeout", "peer":"traversal.punch.io_failed", "selected":"traversal.punch.timeout", "advance":true},
+    {"name":"candidate_rejection_allows_other_family", "local":"traversal.candidate_selection.no_usable_candidate", "peer":null, "selected":"traversal.candidate_selection.no_usable_candidate", "advance":true},
+    {"name":"no_common_network_allows_other_family", "local":null, "peer":"traversal.candidate_selection.no_common_network", "selected":"traversal.candidate_selection.no_common_network", "advance":true},
+    {"name":"key_timeout_requires_new_attempt", "local":null, "peer":"traversal.key_exchange.timeout", "selected":"traversal.key_exchange.timeout", "advance":false},
+    {"name":"disconnected_waits_for_network", "local":"signal.send.disconnected", "peer":null, "selected":"signal.send.disconnected", "advance":false},
+    {"name":"future_peer_error_is_preserved", "local":"traversal.punch.timeout", "peer":"future.round.failed", "selected":"future.round.failed", "advance":false},
+    {"name":"skipped_round_has_no_failure", "local":null, "peer":null, "selected":null, "advance":true}
+  ]
+}

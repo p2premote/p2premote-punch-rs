@@ -28,13 +28,14 @@ pub use types::{
 };
 
 #[cfg(feature = "ffi")]
-const NULL_INPUT: &str = r#"{"ok":false,"error":"input is null"}"#;
+const NULL_INPUT: &str =
+    r#"{"ok":false,"error_code":"native.input.invalid_argument","message":"input is null"}"#;
 
 #[cfg(feature = "ffi")]
 fn alloc_cstring(s: String) -> *mut c_char {
     CString::new(s)
         .unwrap_or_else(|_| {
-            CString::new(r#"{"ok":false,"error":"result contains NUL byte"}"#).unwrap()
+            CString::new(r#"{"ok":false,"error_code":"native.encode.failed","message":"result contains NUL byte"}"#).unwrap()
         })
         .into_raw()
 }
@@ -63,6 +64,9 @@ fn handle_start_udp_tunnel_json(input: &str) -> String {
             let result = UdpTunnelResult {
                 ok: false,
                 error: json_err("invalid input json", err),
+                error_code: error::ErrorCode::NativeInputInvalidArgument
+                    .as_str()
+                    .to_owned(),
                 ..Default::default()
             };
             return encode_tunnel_result(&result);
@@ -92,6 +96,7 @@ fn handle_start_udp_tunnel_json(input: &str) -> String {
             None => encode_tunnel_result(&UdpTunnelResult {
                 ok: false,
                 error: err.to_string(),
+                error_code: err.code().as_str().to_owned(),
                 ..Default::default()
             }),
         },
@@ -102,7 +107,7 @@ fn handle_start_udp_tunnel_json(input: &str) -> String {
 fn encode_tunnel_result(result: &UdpTunnelResult) -> String {
     match serde_json::to_string(result) {
         Ok(s) => s,
-        Err(_) => r#"{"ok":false,"error":"failed to encode tunnel result"}"#.to_string(),
+        Err(_) => r#"{"ok":false,"error_code":"native.encode.failed","message":"failed to encode tunnel result"}"#.to_string(),
     }
 }
 
@@ -342,6 +347,9 @@ fn handle_exchange_json(input: &str) -> String {
             return encode_exchange_result(&ExchangeResult {
                 ok: false,
                 error: json_err("invalid input json", err),
+                error_code: error::ErrorCode::NativeInputInvalidArgument
+                    .as_str()
+                    .to_owned(),
                 ..Default::default()
             })
         }
@@ -380,9 +388,11 @@ fn handle_exchange_json(input: &str) -> String {
             ok: true,
             recv_data: recv,
             error: String::new(),
+            error_code: String::new(),
         },
         Err(err) => ExchangeResult {
             ok: false,
+            error_code: err.code().as_str().to_owned(),
             error: err.to_string(),
             recv_data: String::new(),
         },
@@ -396,6 +406,10 @@ fn handle_exchange_json(input: &str) -> String {
 /// desktop client migrates away from the Go DLL. They are separate from the
 /// exported C ABI and can be replaced by strongly typed APIs in the complete
 /// gonc parity milestone.
+pub mod error;
+#[rustfmt::skip]
+pub mod error_codes;
+
 pub mod api {
     use std::time::Duration;
 
@@ -405,10 +419,9 @@ pub mod api {
         request: types::UdpTunnelInput,
         budget: Duration,
         call: std::sync::Arc<easyp2p::signal::SignalCall>,
-    ) -> Result<types::UdpTunnelResult, String> {
-        let tunnel = easyp2p::udp_tunnel::start_udp_tunnel_with_signal(request, budget, Some(call))
-            .await
-            .map_err(|e| e.to_string())?;
+    ) -> Result<types::UdpTunnelResult, easyp2p::udp_tunnel::StartError> {
+        let tunnel =
+            easyp2p::udp_tunnel::start_udp_tunnel_with_signal(request, budget, Some(call)).await?;
         let mut result = tunnel.result;
         let stop = tunnel.stop;
         result.handle_id =
@@ -420,7 +433,7 @@ pub mod api {
         request: types::ExchangeInput,
         timeout: Duration,
         call: std::sync::Arc<easyp2p::signal::SignalCall>,
-    ) -> Result<types::ExchangeResult, String> {
+    ) -> Result<types::ExchangeResult, easyp2p::P2pError> {
         let recv_data = easyp2p::exchange::exchange_with_signal(
             request.exmode,
             &request.send_data,
@@ -428,12 +441,12 @@ pub mod api {
             timeout,
             call,
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
         Ok(types::ExchangeResult {
             ok: true,
             recv_data,
             error: String::new(),
+            error_code: String::new(),
         })
     }
 
@@ -442,10 +455,8 @@ pub mod api {
     pub async fn start_udp_tunnel(
         request: types::UdpTunnelInput,
         budget: Duration,
-    ) -> Result<types::UdpTunnelResult, String> {
-        let tunnel = easyp2p::udp_tunnel::start_udp_tunnel(request, budget)
-            .await
-            .map_err(|error| error.to_string())?;
+    ) -> Result<types::UdpTunnelResult, easyp2p::udp_tunnel::StartError> {
+        let tunnel = easyp2p::udp_tunnel::start_udp_tunnel(request, budget).await?;
         let mut result = tunnel.result;
         let stop = tunnel.stop;
         result.handle_id =
@@ -482,7 +493,7 @@ pub mod api {
     pub async fn exchange(
         request: types::ExchangeInput,
         timeout: Duration,
-    ) -> Result<types::ExchangeResult, String> {
+    ) -> Result<types::ExchangeResult, easyp2p::P2pError> {
         let budget = timeout + Duration::from_secs(10);
         let recv = easyp2p::exchange::mqtt_exchange_payload(
             request.exmode,
@@ -492,12 +503,12 @@ pub mod api {
             timeout,
             budget,
         )
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
         Ok(types::ExchangeResult {
             ok: true,
             recv_data: recv,
             error: String::new(),
+            error_code: String::new(),
         })
     }
 
@@ -516,7 +527,7 @@ pub mod api {
     pub async fn detect_nat(
         networks: &[&str],
         budget: Duration,
-    ) -> Result<Vec<NatAddressInfo>, String> {
+    ) -> Result<Vec<NatAddressInfo>, easyp2p::P2pError> {
         let scope = easyp2p::Scope::from_timeout(budget);
         let network_list: Vec<String> = networks.iter().map(|s| s.to_string()).collect();
         let results = easyp2p::stun::get_networks_public_ips(
@@ -525,8 +536,7 @@ pub mod api {
             "",
             std::time::Duration::from_millis(2828),
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
         Ok(easyp2p::stun::analyze_stun_results(&results)
             .into_iter()
             .map(|a| NatAddressInfo {
@@ -543,12 +553,29 @@ pub mod api {
 fn encode_exchange_result(result: &ExchangeResult) -> String {
     match serde_json::to_string(result) {
         Ok(s) => s,
-        Err(_) => r#"{"ok":false,"error":"failed to encode exchange result"}"#.to_string(),
+        Err(_) => r#"{"ok":false,"error_code":"native.encode.failed","message":"failed to encode exchange result"}"#.to_string(),
     }
 }
 
 #[cfg(test)]
 mod native_api_tests {
+    #[tokio::test]
+    async fn native_api_keeps_a_typed_failure() {
+        let error = crate::api::start_udp_tunnel(
+            crate::UdpTunnelInput::default(),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.code(),
+            crate::error::ErrorCode::NativeInputInvalidArgument
+        );
+        assert_eq!(
+            crate::error::effective_code(&error),
+            crate::error::ErrorCode::NativeInputInvalidArgument
+        );
+    }
     #[test]
     fn subnet_router_status_is_available_without_c_abi() {
         let result = crate::api::get_subnet_router_status("missing-native-router");
@@ -572,7 +599,7 @@ fn ffi_guard<F: FnOnce(&str) -> String>(input: *const c_char, body: F) -> *mut c
     }));
     alloc_cstring(match outcome {
         Ok(out) => out,
-        Err(_) => r#"{"ok":false,"error":"internal error: punch library panicked"}"#.to_string(),
+        Err(_) => r#"{"ok":false,"error_code":"runtime.execution.panicked","message":"internal error: punch library panicked"}"#.to_string(),
     })
 }
 
@@ -583,7 +610,7 @@ fn ffi_guard_body<F: FnOnce() -> String>(body: F) -> *mut c_char {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
     alloc_cstring(match outcome {
         Ok(out) => out,
-        Err(_) => r#"{"ok":false,"error":"internal error: punch library panicked"}"#.to_string(),
+        Err(_) => r#"{"ok":false,"error_code":"runtime.execution.panicked","message":"internal error: punch library panicked"}"#.to_string(),
     })
 }
 

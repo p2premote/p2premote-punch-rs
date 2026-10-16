@@ -58,6 +58,43 @@ pub struct P2PAttemptDetails {
     pub remote_nat_type: String,
 }
 
+/// Keep pre-filter evidence when all candidates (for example symm/symm) are rejected.
+/// Conflicting NAT classifications remain unknown rather than selecting an arbitrary interface.
+pub fn rejected_attempt_details(
+    local: &[PunchingAddressInfo],
+    remote: &[PunchingAddressInfo],
+) -> P2PAttemptDetails {
+    let Some(network) = local
+        .iter()
+        .find(|left| remote.iter().any(|right| right.network == left.network))
+        .map(|v| v.network.clone())
+    else {
+        return P2PAttemptDetails::default();
+    };
+    let consensus = |addresses: &[PunchingAddressInfo]| {
+        let mut types: Vec<_> = addresses
+            .iter()
+            .filter(|v| {
+                v.network == network && matches!(v.nat_type.as_str(), "easy" | "hard" | "symm")
+            })
+            .map(|v| v.nat_type.clone())
+            .collect();
+        types.sort();
+        types.dedup();
+        if types.len() == 1 {
+            types.pop().unwrap()
+        } else {
+            String::new()
+        }
+    };
+    P2PAttemptDetails {
+        local_nat_type: consensus(local),
+        remote_nat_type: consensus(remote),
+        network,
+        ..Default::default()
+    }
+}
+
 pub fn has_cap(caps: &[String], cap: &str) -> bool {
     caps.iter().any(|c| c == cap)
 }

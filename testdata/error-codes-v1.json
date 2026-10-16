@@ -1,0 +1,504 @@
+{
+  "schema_version": 1,
+  "registry_hash": "c3f51fc48dbebf8ce5bba915248cb08d3ba38a5c043585af8b8eda8a658e2b87",
+  "codes": [
+    {
+      "code": "connection.authorize.unauthenticated",
+      "symbol": "ConnectionAuthorizeUnauthenticated",
+      "message": "未登录或登录已失效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.authorize.forbidden",
+      "symbol": "ConnectionAuthorizeForbidden",
+      "message": "没有连接权限",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.authorize.invalid_request",
+      "symbol": "ConnectionAuthorizeInvalidRequest",
+      "message": "连接参数无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.authorize.daily_limit_reached",
+      "symbol": "ConnectionAuthorizeDailyLimitReached",
+      "message": "今日连接次数已用完",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.authorize.timeout",
+      "symbol": "ConnectionAuthorizeTimeout",
+      "message": "连接授权请求超时",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "connection.authorize.unavailable",
+      "symbol": "ConnectionAuthorizeUnavailable",
+      "message": "连接授权服务暂不可用",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "connection.authorize.invalid_response",
+      "symbol": "ConnectionAuthorizeInvalidResponse",
+      "message": "连接授权响应无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.compatibility.client_upgrade_required",
+      "symbol": "ConnectionCompatibilityClientUpgradeRequired",
+      "message": "请升级客户端",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.peer_prepare.offline",
+      "symbol": "ConnectionPeerPrepareOffline",
+      "message": "目标设备不在线",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.peer_prepare.timeout",
+      "symbol": "ConnectionPeerPrepareTimeout",
+      "message": "等待对端准备超时",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "connection.peer_prepare.rejected",
+      "symbol": "ConnectionPeerPrepareRejected",
+      "message": "对端无法准备连接",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.approval.denied",
+      "symbol": "ConnectionApprovalDenied",
+      "message": "对端拒绝访问",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.approval.timeout",
+      "symbol": "ConnectionApprovalTimeout",
+      "message": "等待审批超时",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.approval.busy",
+      "symbol": "ConnectionApprovalBusy",
+      "message": "对端正在处理其他审批",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.approval.request_missing",
+      "symbol": "ConnectionApprovalRequestMissing",
+      "message": "审批请求已失效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.route_validation.invalid_cidr",
+      "symbol": "ConnectionRouteValidationInvalidCidr",
+      "message": "共享网段无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.route_validation.overlap",
+      "symbol": "ConnectionRouteValidationOverlap",
+      "message": "共享网段重叠",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.execution.user_cancelled",
+      "symbol": "ConnectionExecutionUserCancelled",
+      "message": "用户已取消连接",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.execution.peer_cancelled",
+      "symbol": "ConnectionExecutionPeerCancelled",
+      "message": "对端已取消连接",
+      "retry_class": "stop"
+    },
+    {
+      "code": "connection.execution.network_changed",
+      "symbol": "ConnectionExecutionNetworkChanged",
+      "message": "网络已切换",
+      "retry_class": "wait_network"
+    },
+    {
+      "code": "connection.execution.deadline_exceeded",
+      "symbol": "ConnectionExecutionDeadlineExceeded",
+      "message": "连接任务已超时",
+      "retry_class": "stop"
+    },
+    {
+      "code": "signal.transport_select.peer_upgrade_required",
+      "symbol": "SignalTransportSelectPeerUpgradeRequired",
+      "message": "对端不支持当前信令协议",
+      "retry_class": "stop"
+    },
+    {
+      "code": "signal.transport_select.invalid_selection",
+      "symbol": "SignalTransportSelectInvalidSelection",
+      "message": "信令协议选择无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "signal.send.timeout",
+      "symbol": "SignalSendTimeout",
+      "message": "信令发送超时",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "signal.send.disconnected",
+      "symbol": "SignalSendDisconnected",
+      "message": "信令连接已断开",
+      "retry_class": "wait_network"
+    },
+    {
+      "code": "signal.send.rejected",
+      "symbol": "SignalSendRejected",
+      "message": "服务端拒绝转发信令",
+      "retry_class": "stop"
+    },
+    {
+      "code": "signal.send.queue_full",
+      "symbol": "SignalSendQueueFull",
+      "message": "信令发送队列已满",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "signal.receive.closed",
+      "symbol": "SignalReceiveClosed",
+      "message": "信令接收通道已关闭",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "signal.receive.invalid_frame",
+      "symbol": "SignalReceiveInvalidFrame",
+      "message": "信令消息无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "signal.receive.context_mismatch",
+      "symbol": "SignalReceiveContextMismatch",
+      "message": "信令上下文不匹配",
+      "retry_class": "stop"
+    },
+    {
+      "code": "signal.receive.stale_frame",
+      "symbol": "SignalReceiveStaleFrame",
+      "message": "收到已结束轮次的信令",
+      "retry_class": "stop"
+    },
+    {
+      "code": "signal.receive.payload_too_large",
+      "symbol": "SignalReceivePayloadTooLarge",
+      "message": "信令消息过大",
+      "retry_class": "stop"
+    },
+    {
+      "code": "signal.receive.queue_full",
+      "symbol": "SignalReceiveQueueFull",
+      "message": "信令接收队列已满",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "signal.receive.cancelled",
+      "symbol": "SignalReceiveCancelled",
+      "message": "信令操作已取消",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.nat_detection.timeout",
+      "symbol": "TraversalNatDetectionTimeout",
+      "message": "NAT 探测超时",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.nat_detection.no_result",
+      "symbol": "TraversalNatDetectionNoResult",
+      "message": "未取得 NAT 探测结果",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.nat_detection.io_failed",
+      "symbol": "TraversalNatDetectionIoFailed",
+      "message": "NAT 探测网络操作失败",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.key_exchange.timeout",
+      "symbol": "TraversalKeyExchangeTimeout",
+      "message": "密钥交换超时",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "traversal.key_exchange.invalid_payload",
+      "symbol": "TraversalKeyExchangeInvalidPayload",
+      "message": "密钥交换数据无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.key_exchange.crypto_failed",
+      "symbol": "TraversalKeyExchangeCryptoFailed",
+      "message": "密钥交换加解密失败",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.capability_exchange.timeout",
+      "symbol": "TraversalCapabilityExchangeTimeout",
+      "message": "能力交换超时",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "traversal.capability_exchange.invalid_payload",
+      "symbol": "TraversalCapabilityExchangeInvalidPayload",
+      "message": "能力数据无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.plan_negotiation.timeout",
+      "symbol": "TraversalPlanNegotiationTimeout",
+      "message": "网络计划协商超时",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "traversal.plan_negotiation.mismatch",
+      "symbol": "TraversalPlanNegotiationMismatch",
+      "message": "双方网络计划不一致",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.plan_negotiation.invalid_payload",
+      "symbol": "TraversalPlanNegotiationInvalidPayload",
+      "message": "网络计划数据无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.round_sync.timeout",
+      "symbol": "TraversalRoundSyncTimeout",
+      "message": "打洞轮次同步超时",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "traversal.round_sync.invalid_sequence",
+      "symbol": "TraversalRoundSyncInvalidSequence",
+      "message": "打洞轮次顺序无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.round_sync.peer_closed",
+      "symbol": "TraversalRoundSyncPeerClosed",
+      "message": "对端结束当前轮次",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.address_exchange.timeout",
+      "symbol": "TraversalAddressExchangeTimeout",
+      "message": "地址交换超时",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "traversal.address_exchange.invalid_payload",
+      "symbol": "TraversalAddressExchangeInvalidPayload",
+      "message": "地址交换数据无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.address_exchange.crypto_failed",
+      "symbol": "TraversalAddressExchangeCryptoFailed",
+      "message": "地址交换加解密失败",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.candidate_selection.no_common_network",
+      "symbol": "TraversalCandidateSelectionNoCommonNetwork",
+      "message": "双方没有共同网络",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.candidate_selection.no_usable_candidate",
+      "symbol": "TraversalCandidateSelectionNoUsableCandidate",
+      "message": "没有可用的打洞候选",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.punch.timeout",
+      "symbol": "TraversalPunchTimeout",
+      "message": "打洞超时",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.punch.io_failed",
+      "symbol": "TraversalPunchIoFailed",
+      "message": "打洞网络操作失败",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.punch.failed",
+      "symbol": "TraversalPunchFailed",
+      "message": "打洞未成功",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.punch.ipv6_unavailable",
+      "symbol": "TraversalPunchIpv6Unavailable",
+      "message": "本机没有可用 IPv6",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.lan_probe.timeout",
+      "symbol": "TraversalLanProbeTimeout",
+      "message": "局域网探测超时",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.lan_probe.failed",
+      "symbol": "TraversalLanProbeFailed",
+      "message": "局域网探测未成功",
+      "retry_class": "next_network_or_attempt"
+    },
+    {
+      "code": "traversal.local_forward.invalid_address",
+      "symbol": "TraversalLocalForwardInvalidAddress",
+      "message": "本地转发地址无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.local_forward.io_failed",
+      "symbol": "TraversalLocalForwardIoFailed",
+      "message": "本地转发网络操作失败",
+      "retry_class": "stop"
+    },
+    {
+      "code": "traversal.execution.exhausted",
+      "symbol": "TraversalExecutionExhausted",
+      "message": "计划内的打洞轮次均未成功",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "traversal.execution.cancelled",
+      "symbol": "TraversalExecutionCancelled",
+      "message": "打洞操作已取消",
+      "retry_class": "stop"
+    },
+    {
+      "code": "wireguard.configure.permission_denied",
+      "symbol": "WireguardConfigurePermissionDenied",
+      "message": "配置 WireGuard 的权限不足",
+      "retry_class": "stop"
+    },
+    {
+      "code": "wireguard.configure.invalid_config",
+      "symbol": "WireguardConfigureInvalidConfig",
+      "message": "WireGuard 配置无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "wireguard.configure.backend_unavailable",
+      "symbol": "WireguardConfigureBackendUnavailable",
+      "message": "WireGuard 后端不可用",
+      "retry_class": "stop"
+    },
+    {
+      "code": "wireguard.configure.failed",
+      "symbol": "WireguardConfigureFailed",
+      "message": "WireGuard 配置失败",
+      "retry_class": "stop"
+    },
+    {
+      "code": "wireguard.handshake.timeout",
+      "symbol": "WireguardHandshakeTimeout",
+      "message": "WireGuard 握手超时",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "wireguard.handshake.failed",
+      "symbol": "WireguardHandshakeFailed",
+      "message": "WireGuard 握手失败",
+      "retry_class": "next_attempt"
+    },
+    {
+      "code": "native.input.invalid_argument",
+      "symbol": "NativeInputInvalidArgument",
+      "message": "原生接口参数无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "native.decode.invalid_payload",
+      "symbol": "NativeDecodeInvalidPayload",
+      "message": "原生接口返回数据无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "native.encode.failed",
+      "symbol": "NativeEncodeFailed",
+      "message": "原生接口编码失败",
+      "retry_class": "stop"
+    },
+    {
+      "code": "native.jni.failed",
+      "symbol": "NativeJniFailed",
+      "message": "JNI 调用失败",
+      "retry_class": "stop"
+    },
+    {
+      "code": "report.submit.timeout",
+      "symbol": "ReportSubmitTimeout",
+      "message": "提交连接结果超时",
+      "retry_class": "retry_report"
+    },
+    {
+      "code": "report.submit.unavailable",
+      "symbol": "ReportSubmitUnavailable",
+      "message": "连接结果服务暂不可用",
+      "retry_class": "retry_report"
+    },
+    {
+      "code": "report.submit.unauthorized",
+      "symbol": "ReportSubmitUnauthorized",
+      "message": "提交连接结果需要重新登录",
+      "retry_class": "stop"
+    },
+    {
+      "code": "report.submit.invalid_payload",
+      "symbol": "ReportSubmitInvalidPayload",
+      "message": "连接结果数据无效",
+      "retry_class": "stop"
+    },
+    {
+      "code": "report.submit.conflict",
+      "symbol": "ReportSubmitConflict",
+      "message": "连接结果与已保存记录冲突",
+      "retry_class": "stop"
+    },
+    {
+      "code": "report.persist.failed",
+      "symbol": "ReportPersistFailed",
+      "message": "保存连接结果失败",
+      "retry_class": "retry_report"
+    },
+    {
+      "code": "runtime.execution.unclassified",
+      "symbol": "RuntimeExecutionUnclassified",
+      "message": "发生未分类错误",
+      "retry_class": "stop"
+    },
+    {
+      "code": "runtime.execution.panicked",
+      "symbol": "RuntimeExecutionPanicked",
+      "message": "原生组件发生内部错误",
+      "retry_class": "stop"
+    },
+    {
+      "code": "runtime.config.load_failed",
+      "symbol": "RuntimeConfigLoadFailed",
+      "message": "读取配置失败",
+      "retry_class": "stop"
+    },
+    {
+      "code": "runtime.device.not_registered",
+      "symbol": "RuntimeDeviceNotRegistered",
+      "message": "当前设备尚未注册",
+      "retry_class": "stop"
+    }
+  ]
+}

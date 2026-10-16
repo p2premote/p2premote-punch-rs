@@ -2,6 +2,7 @@
 //! UDP multiplexed over one socket via a UDPSessionDialer equivalent), plus
 //! the easy/hard/symm NAT classification.
 
+use crate::error::ErrorCode;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -58,10 +59,10 @@ pub fn networks_for_stun(network: &str) -> Result<Vec<String>> {
         "tcp" => Ok(vec!["tcp6".into(), "tcp4".into()]),
         "udp" => Ok(vec!["udp6".into(), "udp4".into()]),
         "tcp6" | "tcp4" | "udp6" | "udp4" => Ok(vec![network.to_string()]),
-        _ => Err(P2pError::msg(format!(
-            "unsupported network type: '{}'",
-            network
-        ))),
+        _ => Err(P2pError::new(
+            ErrorCode::TraversalNatDetectionIoFailed,
+            format!("unsupported network type: '{}'", network),
+        )),
     }
 }
 
@@ -607,8 +608,12 @@ pub async fn get_public_ips(
     let mut udp_mux = None;
     let mut _udp_mux_guard: Option<Arc<UdpMux>> = None;
     let bind_addr: Option<SocketAddr> = if !bind.is_empty() {
-        let (host, port) = netx::split_host_port(bind)
-            .ok_or_else(|| P2pError::msg(format!("invalid bind address: {}", bind)))?;
+        let (host, port) = netx::split_host_port(bind).ok_or_else(|| {
+            P2pError::new(
+                ErrorCode::TraversalNatDetectionIoFailed,
+                format!("invalid bind address: {}", bind),
+            )
+        })?;
         let ip: IpAddr = if host.is_empty() {
             if is_ipv6 {
                 IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
@@ -616,8 +621,12 @@ pub async fn get_public_ips(
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED)
             }
         } else {
-            host.parse()
-                .map_err(|_| P2pError::msg(format!("invalid bind ip: {}", host)))?
+            host.parse().map_err(|_| {
+                P2pError::new(
+                    ErrorCode::TraversalNatDetectionIoFailed,
+                    format!("invalid bind ip: {}", host),
+                )
+            })?
         };
         Some(SocketAddr::new(ip, port))
     } else {
@@ -632,8 +641,13 @@ pub async fn get_public_ips(
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
             }
         });
-        let mux = UdpMux::bind(mux_local)
-            .map_err(|e| P2pError::msg(format!("error binding UDP address: {}", e)))?;
+        let mux = UdpMux::bind(mux_local).map_err(|e| {
+            P2pError::with_source(
+                ErrorCode::TraversalNatDetectionIoFailed,
+                "error binding UDP address",
+                e,
+            )
+        })?;
         _udp_mux_guard = Some(mux.clone());
         udp_mux = Some(mux);
     }
@@ -781,7 +795,8 @@ pub async fn get_networks_public_ips(
     let mut bind_owned = bind.to_string();
     let bind_unspecified = bind.is_empty();
     if bind.is_empty() {
-        let port = netx::get_free_port().map_err(|e| P2pError::msg(e.to_string()))?;
+        let port = netx::get_free_port()
+            .map_err(|e| P2pError::new(ErrorCode::TraversalNatDetectionIoFailed, e.to_string()))?;
         bind_owned = format!(":{}", port);
     }
 
@@ -826,7 +841,8 @@ pub async fn get_networks_public_ips(
     }
 
     if all_results.is_empty() {
-        return Err(P2pError::msg(
+        return Err(P2pError::new(
+            ErrorCode::TraversalNatDetectionIoFailed,
             "no public IP addresses found or all attempts failed",
         ));
     }

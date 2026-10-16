@@ -2,6 +2,7 @@
 //! negotiation over MQTT, LAN or Internet punching, then a local UDP forwarder
 //! bridging the local WireGuard endpoint to the punched P2P socket.
 
+use crate::error::ErrorCode;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,21 +46,36 @@ const TRANSPORT_MODE_PLAIN: &str = "plain";
 #[derive(Debug)]
 pub struct StartError {
     pub tunnel_result: Option<UdpTunnelResult>,
-    pub message: String,
+    pub error: crate::error::AppError,
 }
 
 impl StartError {
-    fn plain<S: Into<String>>(message: S) -> Self {
-        StartError {
+    fn plain(message: impl Into<String>) -> Self {
+        Self::coded(crate::error::ErrorCode::NativeInputInvalidArgument, message)
+    }
+    fn coded(code: crate::error::ErrorCode, message: impl Into<String>) -> Self {
+        Self {
             tunnel_result: None,
-            message: message.into(),
+            error: crate::error::AppError::new(code, message),
         }
     }
+    pub fn code(&self) -> crate::error::ErrorCode {
+        self.error.code()
+    }
 }
-
+impl From<P2pError> for StartError {
+    fn from(error: P2pError) -> Self {
+        udp_tunnel_error(0, &error, "tunnel start failed")
+    }
+}
 impl std::fmt::Display for StartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
+        self.error.fmt(f)
+    }
+}
+impl std::error::Error for StartError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
     }
 }
 
@@ -76,6 +92,47 @@ impl TunnelStop {
 pub struct StartUdpTunnelOutcome {
     pub result: UdpTunnelResult,
     pub stop: TunnelStop,
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+    use crate::easyp2p::candidates::{self, PunchingAddressInfo};
+    use crate::error::ErrorCode;
+
+    #[test]
+    fn rejected_symmetric_pair_survives_failure_wrapping_and_json() {
+        let address = |nat: &str| PunchingAddressInfo {
+            network: "udp4".into(),
+            nat_type: "symm".into(),
+            lan: "10.0.0.2:4000".into(),
+            nat: nat.into(),
+        };
+        let local = [address("203.0.113.1:5000")];
+        let remote = [address("198.51.100.1:6000")];
+        let (_, candidates) = candidates::build_base_p2p_candidates(&local, &remote, false);
+        assert!(candidates.final_results.is_empty());
+        let error = P2pError::new(
+            ErrorCode::TraversalCandidateSelectionNoUsableCandidate,
+            "any language",
+        )
+        .with_details(candidates::rejected_attempt_details(&local, &remote));
+        let failure = StartError::from(error.context("outer context"));
+        assert_eq!(
+            failure.code(),
+            ErrorCode::TraversalCandidateSelectionNoUsableCandidate
+        );
+        let json = serde_json::to_value(failure.tunnel_result.unwrap()).unwrap();
+        assert_eq!(
+            json["error_code"],
+            "traversal.candidate_selection.no_usable_candidate"
+        );
+        assert_eq!(json["local_nat_type"], "symm");
+        assert_eq!(json["remote_nat_type"], "symm");
+        assert_eq!(json["network"], "udp4");
+        assert!(json.get("message").is_some());
+        assert!(json.get("error").is_none());
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,10 +166,10 @@ fn normalize_traversal_mode(mode: &str) -> Result<&'static str, P2pError> {
         TRAVERSAL_MODE_AUTO => Ok(TRAVERSAL_MODE_AUTO),
         TRAVERSAL_MODE_INTERNET => Ok(TRAVERSAL_MODE_INTERNET),
         TRAVERSAL_MODE_LAN => Ok(TRAVERSAL_MODE_LAN),
-        _ => Err(P2pError::msg(format!(
-            "unsupported traversal_mode: {}",
-            mode
-        ))),
+        _ => Err(P2pError::new(
+            ErrorCode::TraversalPlanNegotiationInvalidPayload,
+            format!("unsupported traversal_mode: {}", mode),
+        )),
     }
 }
 
@@ -121,23 +178,30 @@ fn select_negotiated_traversal(
     remote: &TraversalCapability,
 ) -> Result<&'static str, P2pError> {
     if remote.version < 1 {
-        return Err(P2pError::msg("peer does not support traversal negotiation"));
+        return Err(P2pError::new(
+            ErrorCode::TraversalPlanNegotiationInvalidPayload,
+            "peer does not support traversal negotiation",
+        ));
     }
     if normalize_traversal_mode(&remote.mode).is_err() || remote.mode.is_empty() {
-        return Err(P2pError::msg(format!(
-            "peer advertised invalid traversal mode {:?}",
-            remote.mode
-        )));
+        return Err(P2pError::new(
+            ErrorCode::TraversalPlanNegotiationInvalidPayload,
+            format!("peer advertised invalid traversal mode {:?}", remote.mode),
+        ));
     }
     if local.mode == TRAVERSAL_MODE_LAN || remote.mode == TRAVERSAL_MODE_LAN {
         if local.mode == TRAVERSAL_MODE_INTERNET || remote.mode == TRAVERSAL_MODE_INTERNET {
-            return Err(P2pError::msg(format!(
-                "peer traversal modes conflict: local={} remote={}",
-                local.mode, remote.mode
-            )));
+            return Err(P2pError::new(
+                ErrorCode::TraversalPlanNegotiationInvalidPayload,
+                format!(
+                    "peer traversal modes conflict: local={} remote={}",
+                    local.mode, remote.mode
+                ),
+            ));
         }
         if !local.supports_lan || !remote.supports_lan {
-            return Err(P2pError::msg(
+            return Err(P2pError::new(
+                ErrorCode::TraversalPlanNegotiationInvalidPayload,
                 "LAN traversal is not supported by both peers",
             ));
         }
@@ -180,7 +244,8 @@ async fn exchange_role_payload<T: Serialize + serde::de::DeserializeOwned + 'sta
         return Ok(remote);
     }
     if role_hint != "passive" {
-        return Err(P2pError::msg(
+        return Err(P2pError::new(
+            ErrorCode::TraversalPlanNegotiationInvalidPayload,
             "role_hint is required for coordinated traversal",
         ));
     }
@@ -240,10 +305,7 @@ async fn coordinate_traversal_mode(
                 );
                 return Ok(legacy);
             }
-            return Err(P2pError::msg(format!(
-                "LAN capability exchange failed: {}",
-                err
-            )));
+            return Err(err.context("LAN capability exchange failed"));
         }
     };
     match select_negotiated_traversal(&local, &remote) {
@@ -298,7 +360,7 @@ async fn establish_internet_udp_p2p(
         {
             Ok(conn_info) => return (Some(conn_info), attempt, None),
             Err(err) => {
-                let failed_at_exchange = err.stage() == super::ErrorStage::Exchange;
+                let failed_at_exchange = err.details().is_none();
                 crate::p2pevent!(
                     "p2p tunnel attempt failed: attempt={}, network={}, exchange_succeeded={}, deadline_expired={}, remaining_ms={}, error={}",
                     attempt,
@@ -356,6 +418,7 @@ fn udp_tunnel_error(attempt: i32, cause: &P2pError, message: &str) -> StartError
         ok: false,
         attempts: attempt,
         error: wrapped.clone(),
+        error_code: cause.code().as_str().to_owned(),
         ..Default::default()
     };
     if let Some(details) = cause.details() {
@@ -370,7 +433,7 @@ fn udp_tunnel_error(attempt: i32, cause: &P2pError, message: &str) -> StartError
     }
     StartError {
         tunnel_result: Some(result),
-        message: wrapped,
+        error: cause.app_error().context(message),
     }
 }
 
@@ -386,7 +449,7 @@ async fn establish_udp_tunnel_p2p(
     let decision =
         coordinate_traversal_mode(scope, traversal_mode, role_hint, token, external.clone())
             .await
-            .map_err(|e| StartError::plain(e.to_string()))?;
+            .map_err(StartError::from)?;
 
     if decision.selected_traversal == SELECTED_TRAVERSAL_INTERNET {
         let (conn_info, attempts, err) =
@@ -394,9 +457,12 @@ async fn establish_udp_tunnel_p2p(
         match conn_info {
             Some(info) => return Ok((info, attempts, decision)),
             None => {
-                return Err(
-                    err.unwrap_or_else(|| StartError::plain("failed to establish gonc p2p tunnel"))
-                )
+                return Err(err.unwrap_or_else(|| {
+                    StartError::coded(
+                        crate::error::ErrorCode::TraversalPunchFailed,
+                        "failed to establish gonc p2p tunnel",
+                    )
+                }))
             }
         }
     }
@@ -445,22 +511,16 @@ async fn establish_udp_tunnel_p2p(
 
     if traversal_mode == TRAVERSAL_MODE_LAN {
         if let Err(lan_err) = lan_result {
-            return Err(StartError::plain(format!(
-                "LAN traversal failed: {}",
-                lan_err
-            )));
+            return Err(StartError::from(lan_err));
         }
         if let Err(outcome_err) = remote_outcome {
-            return Err(StartError::plain(format!(
-                "LAN outcome exchange failed: {}",
-                outcome_err
-            )));
+            return Err(StartError::from(outcome_err));
         }
         if let Ok(remote) = remote_outcome {
-            return Err(StartError::plain(format!(
-                "peer LAN traversal failed: {}",
-                remote.error
-            )));
+            return Err(StartError::coded(
+                ErrorCode::TraversalLanProbeFailed,
+                format!("peer LAN traversal failed: {}", remote.error),
+            ));
         }
     }
 
@@ -472,9 +532,12 @@ async fn establish_udp_tunnel_p2p(
         establish_internet_udp_p2p(scope, network, bind_ip, token, external).await;
     match conn_info {
         Some(info) => Ok((info, attempts, decision)),
-        None => {
-            Err(err.unwrap_or_else(|| StartError::plain("failed to establish gonc p2p tunnel")))
-        }
+        None => Err(err.unwrap_or_else(|| {
+            StartError::coded(
+                crate::error::ErrorCode::TraversalPunchFailed,
+                "failed to establish gonc p2p tunnel",
+            )
+        })),
     }
 }
 
@@ -501,8 +564,7 @@ pub async fn start_udp_tunnel_with_signal(
             req.role_hint
         )));
     }
-    let traversal_mode = normalize_traversal_mode(&req.traversal_mode)
-        .map_err(|e| StartError::plain(e.to_string()))?;
+    let traversal_mode = normalize_traversal_mode(&req.traversal_mode).map_err(StartError::from)?;
     if traversal_mode != TRAVERSAL_MODE_INTERNET && req.role_hint.is_empty() {
         return Err(StartError::plain(
             "role_hint is required for coordinated UDP tunnel capabilities",
@@ -571,24 +633,65 @@ pub async fn start_udp_tunnel_with_signal(
     )
     .await?;
 
+    let details = super::candidates::P2PAttemptDetails {
+        network: conn_info.networks_used.first().cloned().unwrap_or_default(),
+        is_client: conn_info.is_client,
+        local_lan: conn_info.local_lan.clone(),
+        local_nat: conn_info.local_nat.clone(),
+        local_nat_type: conn_info.local_nat_type.clone(),
+        remote_lan: conn_info.remote_lan.clone(),
+        remote_nat: conn_info.remote_nat.clone(),
+        remote_nat_type: conn_info.remote_nat_type.clone(),
+    };
+    let failure = |error: P2pError| {
+        udp_tunnel_error(
+            attempt,
+            &error.with_details(details.clone()),
+            "local forwarding setup failed",
+        )
+    };
     if scope.expired() {
-        return Err(StartError::plain("signal_cancelled"));
+        return Err(failure(
+            scope.interruption(ErrorCode::ConnectionExecutionDeadlineExceeded),
+        ));
     }
 
     let listen_port = req.local_listen_port.max(0) as u16;
     let listen_addr: SocketAddr = format!("{}:{}", local_listen_ip, listen_port)
         .parse()
-        .map_err(|e| StartError::plain(format!("resolve local listen addr failed: {}", e)))?;
+        .map_err(|e| {
+            failure(P2pError::with_source(
+                ErrorCode::TraversalLocalForwardInvalidAddress,
+                "invalid local listen address",
+                e,
+            ))
+        })?;
     let target_addr: SocketAddr = format!("{}:{}", remote_target_ip, req.remote_target_port)
         .parse()
-        .map_err(|e| StartError::plain(format!("resolve remote target addr failed: {}", e)))?;
+        .map_err(|e| {
+            failure(P2pError::with_source(
+                ErrorCode::TraversalLocalForwardInvalidAddress,
+                "invalid remote target address",
+                e,
+            ))
+        })?;
 
     let local_socket = dial_udp_forward(listen_addr, target_addr)
         .await
-        .map_err(|e| StartError::plain(format!("dial local udp forward failed: {}", e)))?;
-    let local_actual = local_socket
-        .local_addr()
-        .map_err(|e| StartError::plain(e.to_string()))?;
+        .map_err(|e| {
+            failure(P2pError::with_source(
+                ErrorCode::TraversalLocalForwardIoFailed,
+                "bind local udp forward failed",
+                e,
+            ))
+        })?;
+    let local_actual = local_socket.local_addr().map_err(|e| {
+        failure(P2pError::with_source(
+            ErrorCode::TraversalLocalForwardIoFailed,
+            "read local udp address failed",
+            e,
+        ))
+    })?;
 
     let selected_network = conn_info
         .networks_used
@@ -614,6 +717,7 @@ pub async fn start_udp_tunnel_with_signal(
         is_client: conn_info.is_client,
         attempts: attempt,
         error: String::new(),
+        error_code: String::new(),
     };
 
     let token = Arc::new(CancelToken::new());

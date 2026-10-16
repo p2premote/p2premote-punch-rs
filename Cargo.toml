@@ -25,6 +25,7 @@ socket2 = "0.6"
 rumqttc = { version = "0.24", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+thiserror = "2"
 sha2 = "0.10"
 md-5 = "0.10"
 aes-gcm = "0.10"

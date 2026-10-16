@@ -1,6 +1,7 @@
 //! Byte-exact port of easyp2p's topic derivation, secure payload encryption
 //! and P-256 key exchange (p2p.go: CalculateMD5/deriveKey*/encryptAES).
 
+use crate::error::ErrorCode;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
@@ -94,13 +95,19 @@ pub fn mqtt_generate_client_id(topic_desc: &str, session_uid: &str) -> String {
 
 #[allow(deprecated)]
 pub fn encrypt_aes(key: &[u8; 32], plaintext: &[u8]) -> Result<SecurePayload> {
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| P2pError::msg(e.to_string()))?;
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| P2pError::new(ErrorCode::TraversalKeyExchangeCryptoFailed, e.to_string()))?;
     let mut nonce_bytes = [0u8; 12];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, Payload::from(plaintext))
-        .map_err(|_| P2pError::msg("aes-gcm encrypt failed"))?;
+        .map_err(|_| {
+            P2pError::new(
+                ErrorCode::TraversalKeyExchangeCryptoFailed,
+                "aes-gcm encrypt failed",
+            )
+        })?;
     Ok(SecurePayload {
         nonce: b64().encode(nonce_bytes),
         data: b64().encode(ciphertext),
@@ -109,19 +116,33 @@ pub fn encrypt_aes(key: &[u8; 32], plaintext: &[u8]) -> Result<SecurePayload> {
 
 #[allow(deprecated)]
 pub fn decrypt_aes(key: &[u8; 32], payload: &SecurePayload) -> Result<Vec<u8>> {
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| P2pError::msg(e.to_string()))?;
-    let nonce_bytes = b64()
-        .decode(payload.nonce.as_bytes())
-        .map_err(|e| P2pError::msg(format!("failed to decode nonce: {}", e)))?;
-    let ciphertext = b64()
-        .decode(payload.data.as_bytes())
-        .map_err(|e| P2pError::msg(format!("failed to decode data: {}", e)))?;
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| P2pError::new(ErrorCode::TraversalKeyExchangeCryptoFailed, e.to_string()))?;
+    let nonce_bytes = b64().decode(payload.nonce.as_bytes()).map_err(|e| {
+        P2pError::with_source(
+            ErrorCode::TraversalKeyExchangeCryptoFailed,
+            "failed to decode nonce",
+            e,
+        )
+    })?;
+    let ciphertext = b64().decode(payload.data.as_bytes()).map_err(|e| {
+        P2pError::with_source(
+            ErrorCode::TraversalKeyExchangeCryptoFailed,
+            "failed to decode data",
+            e,
+        )
+    })?;
     cipher
         .decrypt(
             Nonce::from_slice(&nonce_bytes),
             Payload::from(ciphertext.as_slice()),
         )
-        .map_err(|_| P2pError::msg("aes-gcm decrypt failed"))
+        .map_err(|_| {
+            P2pError::new(
+                ErrorCode::TraversalKeyExchangeCryptoFailed,
+                "aes-gcm decrypt failed",
+            )
+        })
 }
 
 // ============ P-256 key exchange ============
@@ -136,7 +157,12 @@ impl EcdhKeyPair {
     #[doc(hidden)]
     #[allow(dead_code)]
     pub fn from_secret_slice(bytes: &[u8; 32]) -> Result<Self> {
-        let secret = SecretKey::from_slice(bytes).map_err(|_| P2pError::msg("invalid secret"))?;
+        let secret = SecretKey::from_slice(bytes).map_err(|_| {
+            P2pError::new(
+                ErrorCode::TraversalKeyExchangeCryptoFailed,
+                "invalid secret",
+            )
+        })?;
         let public = secret.public_key();
         Ok(EcdhKeyPair {
             public_b64: b64().encode(public.to_sec1_bytes()),
@@ -150,7 +176,10 @@ impl EcdhKeyPair {
         // Go: elliptic.Marshal → uncompressed SEC1 (0x04 || X || Y, 65 bytes).
         let sec1 = public.to_sec1_bytes();
         if sec1.len() != 65 {
-            return Err(P2pError::msg("unexpected P-256 public key encoding"));
+            return Err(P2pError::new(
+                ErrorCode::TraversalKeyExchangeCryptoFailed,
+                "unexpected P-256 public key encoding",
+            ));
         }
         Ok(EcdhKeyPair {
             secret,
@@ -161,11 +190,19 @@ impl EcdhKeyPair {
     /// sha256 of the ECDH shared X coordinate, mirroring Go's
     /// `sha256.Sum256(sharedX.Bytes())` (leading zero bytes stripped).
     pub fn shared_key(&self, peer_public_b64: &str) -> Result<[u8; 32]> {
-        let peer_bytes = b64()
-            .decode(peer_public_b64.as_bytes())
-            .map_err(|e| P2pError::msg(format!("failed to decode peer's public key: {}", e)))?;
-        let peer_public = PublicKey::from_sec1_bytes(&peer_bytes)
-            .map_err(|_| P2pError::msg("invalid peer public key"))?;
+        let peer_bytes = b64().decode(peer_public_b64.as_bytes()).map_err(|e| {
+            P2pError::with_source(
+                ErrorCode::TraversalKeyExchangeCryptoFailed,
+                "failed to decode peer's public key",
+                e,
+            )
+        })?;
+        let peer_public = PublicKey::from_sec1_bytes(&peer_bytes).map_err(|_| {
+            P2pError::new(
+                ErrorCode::TraversalKeyExchangeCryptoFailed,
+                "invalid peer public key",
+            )
+        })?;
         let shared = diffie_hellman(self.secret.to_nonzero_scalar(), *peer_public.as_affine());
         let raw: &[u8; 32] = shared.raw_secret_bytes().as_ref();
         let stripped = raw

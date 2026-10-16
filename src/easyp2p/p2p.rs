@@ -2,6 +2,7 @@
 //! discovery, encrypted address exchange with ECDH, candidate iteration with
 //! MQTT round sync, UDP hole punching.
 
+use crate::error::ErrorCode;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -122,7 +123,7 @@ async fn detect_nat_address_info(
         }
     };
     if scope.expired() {
-        return Err(P2pError::msg("operation cancelled"));
+        return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
     }
     let mut addresses = Vec::new();
     for item in stun::analyze_stun_results(&all_results) {
@@ -171,24 +172,24 @@ pub async fn do_auto_p2p_ex2(
     signal: &Arc<SignalSession>,
 ) -> Result<(Vec<P2PAddressInfo>, P2PSessionContext)> {
     if scope.expired() {
-        return Err(P2pError::msg("operation cancelled"));
+        return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
     }
 
     signal
         .prepare_topic(scope, "gonc-exchange-address", session_uid)
         .await
-        .map_err(|e| P2pError::msg(format!("failed to prepare address signal: {}", e)))?;
+        .map_err(|e| e.context("failed to prepare address signal"))?;
     signal
         .prepare_topic(scope, "gonc-exchange-sync", session_uid)
         .await
-        .map_err(|e| P2pError::msg(format!("failed to prepare sync signal: {}", e)))?;
+        .map_err(|e| e.context("failed to prepare sync signal"))?;
     if scope.expired() {
-        return Err(P2pError::msg("operation cancelled"));
+        return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
     }
 
     let my_addresses = detect_nat_address_info(scope, networks, bind).await?;
     if scope.expired() {
-        return Err(P2pError::msg("operation cancelled"));
+        return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
     }
 
     let mut my_caps = vec![
@@ -217,7 +218,7 @@ pub async fn do_auto_p2p_ex2(
         keypair = Some(kp);
     }
     if scope.expired() {
-        return Err(P2pError::msg("operation cancelled"));
+        return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
     }
 
     crate::p2plog!(
@@ -247,18 +248,23 @@ pub async fn do_auto_p2p_ex2(
     );
 
     if my_payload.addresses.is_empty() || remote_payload.addresses.is_empty() {
-        return Err(P2pError::msg("no common usable network types with peer"));
+        return Err(P2pError::new(
+            ErrorCode::TraversalCandidateSelectionNoCommonNetwork,
+            "no common usable network types with peer",
+        ));
     }
 
     let mut shared_key = [0u8; 32];
     if need_shared_key {
         let Some(kp) = keypair else {
-            return Err(P2pError::msg(
+            return Err(P2pError::new(
+                ErrorCode::TraversalPunchFailed,
                 "missing public key from peer for key exchange",
             ));
         };
         if remote_payload.pub_key.is_empty() {
-            return Err(P2pError::msg(
+            return Err(P2pError::new(
+                ErrorCode::TraversalPunchFailed,
                 "missing public key from peer for key exchange",
             ));
         }
@@ -290,9 +296,19 @@ pub async fn do_auto_p2p_ex2(
     }
     if built.final_results.is_empty() {
         if !built.have_common_network {
-            return Err(P2pError::msg("no common usable network types with peer"));
+            return Err(P2pError::new(
+                ErrorCode::TraversalCandidateSelectionNoCommonNetwork,
+                "no common usable network types with peer",
+            ));
         }
-        return Err(P2pError::msg("no usable NAT types with peer"));
+        return Err(P2pError::new(
+            ErrorCode::TraversalCandidateSelectionNoUsableCandidate,
+            "no usable NAT types with peer",
+        )
+        .with_details(candidates::rejected_attempt_details(
+            &my_payload.addresses,
+            &remote_payload.addresses,
+        )));
     }
 
     candidates::collect_udp4_nat_alternatives(&mut built.final_results);
@@ -362,12 +378,12 @@ pub async fn mqtt_p2p_round_sync(
             Some(filter),
         )
         .await
-        .map_err(|e| P2pError::msg(format!("failed to exchange sync message: {}", e)))?;
+        .map_err(|e| e.context("failed to exchange sync message"))?;
     if msg_recv != msg_need {
-        return Err(P2pError::msg(format!(
-            "expected message '{}', but got '{}'",
-            msg_need, msg_recv
-        )));
+        return Err(P2pError::new(
+            ErrorCode::TraversalPunchFailed,
+            format!("expected message '{}', but got '{}'", msg_need, msg_recv),
+        ));
     }
     Ok(())
 }
@@ -413,7 +429,7 @@ pub async fn easy_p2p_mp_with_signal(
     let client_id = crypto::mqtt_generate_client_id(TOPIC_DESC_SIGNAL, session_uid);
     let signal = SignalSession::new(scope, &client_id, external)
         .await
-        .map_err(|e| P2pError::msg(format!("failed to prepare signal session: {}", e)))?;
+        .map_err(|e| e.context("failed to prepare signal session"))?;
 
     let (p2p_infos, sess_ctx) = do_auto_p2p_ex2(
         scope,
@@ -425,12 +441,10 @@ pub async fn easy_p2p_mp_with_signal(
         &signal,
     )
     .await
-    .map_err(|e| {
-        P2pError::msg(format!("failed to exchange address info: {}", e)).at_exchange_stage()
-    })?;
+    .map_err(|e| e.context("failed to exchange address info"))?;
 
     if scope.expired() {
-        return Err(P2pError::msg("operation cancelled"));
+        return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
     }
 
     let mut round: i32 = 0;
@@ -439,13 +453,14 @@ pub async fn easy_p2p_mp_with_signal(
     #[allow(unused_mut)]
     let mut selected: Option<&P2PAddressInfo> = None;
     let max_rounds = 5;
+    let mut last_error = None;
 
     let infos = p2p_infos;
     let mut index = 0usize;
     while index < infos.len() {
         let p2p_info = &infos[index];
         if scope.expired() {
-            return Err(P2pError::msg("operation cancelled"));
+            return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
         }
         selected = Some(p2p_info);
         // FFI path: relay candidates never exist (allow_relay=false).
@@ -513,7 +528,9 @@ pub async fn easy_p2p_mp_with_signal(
             Err(err) => {
                 // A failed signal call ends this attempt; preserve its cause
                 // before cancellation is translated into a generic deadline error.
-                signal.check_failure()?;
+                signal.check_failure().map_err(|error| {
+                    error.with_details(attempt_details(selected, Some(&sess_ctx)))
+                })?;
                 crate::p2pevent!(
                     "candidate round failed: session={}, round={}, network={}, deadline_expired={}, remaining_ms={}, error={}",
                     signal.transport(),
@@ -524,10 +541,14 @@ pub async fn easy_p2p_mp_with_signal(
                     err
                 );
                 if scope.expired() {
-                    return Err(P2pError::msg("operation cancelled"));
+                    return Err(scope
+                        .interruption(ErrorCode::TraversalPunchTimeout)
+                        .with_details(attempt_details(selected, Some(&sess_ctx))));
                 }
                 crate::p2plog!("ERROR: {}", err);
-                if err.is_unretryable() || round >= max_rounds {
+                let stop = err.is_unretryable() || round >= max_rounds;
+                last_error = Some(err);
+                if stop {
                     break;
                 }
                 scope.sleep_until_deadline(Duration::from_secs(1)).await;
@@ -536,6 +557,12 @@ pub async fn easy_p2p_mp_with_signal(
         index += 1;
     }
 
-    Err(P2pError::msg("direct P2P connection failed")
+    Err(last_error
+        .unwrap_or_else(|| {
+            P2pError::new(
+                ErrorCode::TraversalPunchFailed,
+                "direct P2P connection failed",
+            )
+        })
         .with_details(attempt_details(selected, Some(&sess_ctx))))
 }
