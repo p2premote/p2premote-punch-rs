@@ -217,7 +217,7 @@ fn select_negotiated_traversal(
 }
 
 /// exchangeRolePayload: role-driven capability exchange over a fresh session.
-async fn exchange_role_payload<T: Serialize + serde::de::DeserializeOwned + 'static>(
+pub(super) async fn exchange_role_payload<T: Serialize + serde::de::DeserializeOwned + 'static>(
     scope: &Scope,
     role_hint: &str,
     token: &str,
@@ -437,6 +437,21 @@ fn udp_tunnel_error(attempt: i32, cause: &P2pError, message: &str) -> StartError
     }
 }
 
+pub(super) fn tunnel_budgets(
+    caller_budget: Duration,
+    probe_budget: Duration,
+    coordinated_lan: bool,
+) -> (Duration, Option<Duration>) {
+    if coordinated_lan {
+        (
+            caller_budget.min(probe_budget.saturating_add(Duration::from_secs(10))),
+            Some(probe_budget),
+        )
+    } else {
+        (caller_budget.min(probe_budget), None)
+    }
+}
+
 async fn establish_udp_tunnel_p2p(
     scope: &Scope,
     traversal_mode: &str,
@@ -445,6 +460,7 @@ async fn establish_udp_tunnel_p2p(
     bind_ip: &str,
     token: &str,
     external: Option<Arc<SignalCall>>,
+    lan_probe_budget: Option<Duration>,
 ) -> Result<(P2PConnInfo, i32, TraversalDecision), StartError> {
     let decision =
         coordinate_traversal_mode(scope, traversal_mode, role_hint, token, external.clone())
@@ -468,7 +484,7 @@ async fn establish_udp_tunnel_p2p(
     }
 
     // LAN traversal.
-    let lan_scope = scope.child(scope.bounded_timeout(Duration::from_secs(20)));
+    let lan_scope = scope.child(lan_probe_budget.unwrap_or(Duration::from_secs(20)));
     let lan_transport = if network.starts_with("tcp") {
         "tcp"
     } else {
@@ -611,7 +627,15 @@ pub async fn start_udp_tunnel_with_signal(
     } else {
         req.timeout_secs
     };
-    let budget = budget.min(Duration::from_secs(timeout_secs as u64));
+    let probe_budget = Duration::from_secs(timeout_secs as u64);
+    // New signaling must still exchange the LAN outcome after the probe expires.
+    // Keep legacy MQTT timing unchanged; the registered call and caller budget
+    // remain hard limits on the additional coordination time.
+    let (budget, lan_probe_budget) = tunnel_budgets(
+        budget,
+        probe_budget,
+        external.is_some() && traversal_mode == TRAVERSAL_MODE_LAN,
+    );
     let scope = match &external {
         Some(call) => {
             if !call.matches_uid(&req.token) || !call.call_id().starts_with("network/") {
@@ -630,6 +654,7 @@ pub async fn start_udp_tunnel_with_signal(
         &req.bind_ip,
         &req.token,
         external,
+        lan_probe_budget,
     )
     .await?;
 

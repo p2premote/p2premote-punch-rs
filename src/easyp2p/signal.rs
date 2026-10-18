@@ -1080,6 +1080,84 @@ mod tests {
         assert!(both.select(Some(&unknown), true).is_err());
     }
     #[tokio::test]
+    async fn lan_probe_expiry_does_not_poison_outcome_signaling() {
+        use super::super::udp_tunnel::{exchange_role_payload, tunnel_budgets};
+        let (a, b, _, _) = pair();
+        let (total, probe) =
+            tunnel_budgets(Duration::from_secs(2), Duration::from_millis(20), true);
+        let ac = a
+            .register_call("network/1", "abcdefghijklmnop", total)
+            .unwrap();
+        let bc = b
+            .register_call("network/1", "abcdefghijklmnop", total)
+            .unwrap();
+        let scope_a = ac.scope(total);
+        let scope_b = bc.scope(total);
+        let probe_scope = scope_a.child(probe.unwrap());
+        probe_scope
+            .sleep_until_deadline(probe_scope.remaining())
+            .await;
+        assert!(probe_scope.expired());
+        assert!(!scope_a.expired());
+        let failed = false;
+        let (ar, br) = tokio::join!(
+            exchange_role_payload(
+                &scope_a,
+                "active",
+                "abcdefghijklmnop",
+                "wgvpn-lan-outcome-v1",
+                &failed,
+                scope_a.remaining(),
+                Some(ac.clone())
+            ),
+            exchange_role_payload(
+                &scope_b,
+                "passive",
+                "abcdefghijklmnop",
+                "wgvpn-lan-outcome-v1",
+                &failed,
+                scope_b.remaining(),
+                Some(bc.clone())
+            )
+        );
+        assert!(!ar.unwrap());
+        assert!(!br.unwrap());
+        assert!(ac.failure().is_none());
+        assert!(bc.failure().is_none());
+        a.close_call("network/1");
+        b.close_call("network/1");
+        assert!(a
+            .register_call("network/2", "next-round-token", Duration::from_secs(1))
+            .is_ok());
+        assert!(b
+            .register_call("network/2", "next-round-token", Duration::from_secs(1))
+            .is_ok());
+    }
+
+    #[test]
+    fn lan_coordination_budget_is_bounded_and_legacy_timing_is_unchanged() {
+        use super::super::udp_tunnel::tunnel_budgets;
+        let one = Duration::from_secs(1);
+        assert_eq!(
+            tunnel_budgets(Duration::from_secs(100), one, true),
+            (Duration::from_secs(11), Some(one))
+        );
+        assert_eq!(
+            tunnel_budgets(Duration::from_millis(500), one, true),
+            (Duration::from_millis(500), Some(one))
+        );
+        assert_eq!(
+            tunnel_budgets(Duration::from_secs(100), one, false),
+            (one, None)
+        );
+        let six = Duration::from_secs(6);
+        assert_eq!(
+            tunnel_budgets(Duration::from_secs(100), six, false),
+            (six, None)
+        );
+    }
+
+    #[tokio::test]
     async fn mutual_has_two_data_messages_and_no_peer_ack() {
         let (a, b, ab, ba) = pair();
         let ac = a

@@ -498,10 +498,11 @@ async fn lan_initiator(
             port: port as i64,
         },
     );
+    // Short redundancy bursts leave most of a 1s round for actual punching.
     for _ in 0..3 {
         mc.broadcast(&confirm_data).await;
         mc.send_to(&confirm_data, Some(resp.1)).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     let mut confirm_ticker = tokio::time::interval(Duration::from_millis(300));
@@ -581,7 +582,7 @@ async fn lan_responder(
         for _ in 0..3 {
             mc.broadcast(&resp_data).await;
             mc.send_to(&resp_data, Some(src)).await;
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         // Phase 2: keep responding + wait for Confirm (10s deadline).
@@ -623,7 +624,7 @@ async fn lan_responder(
         for _ in 0..8 {
             mc.broadcast(&ack_data).await;
             mc.send_to(&ack_data, Some(confirm_src)).await;
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
         crate::p2plog!("[LAN] Responder: sent ACK → discovery complete");
         return Ok(LanDiscoverResult {
@@ -706,4 +707,91 @@ pub async fn easy_p2p_lan(
         remote_lan: p2p_info.remote_lan.clone(),
         remote_nat: p2p_info.remote_nat.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn responder_ack_burst_leaves_time_for_short_lan_punch() {
+        let peer = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        let peer_addr = peer.local_addr().unwrap();
+        let mc = Arc::new(LanMcast {
+            socket: Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()),
+            group: SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 2), peer_addr.port()),
+            iface_addrs: Vec::new(),
+        });
+        let key = lan_derive_key("short-lan-test");
+        let (beacon_tx, mut beacon_rx) = mpsc::channel(1);
+        let (confirm_tx, mut confirm_rx) = mpsc::channel(1);
+        let beacon = LanBeacon {
+            session_id: "session".into(),
+            nonce_a: "nonce-a".into(),
+            transport: "udp".into(),
+        };
+        beacon_tx
+            .send((
+                lan_decode(&key, &lan_encode(&key, "B", &beacon)).unwrap(),
+                peer_addr,
+            ))
+            .await
+            .unwrap();
+        let scope = Scope::from_timeout(Duration::from_secs(1));
+        let nonces = Arc::new(Mutex::new(HashSet::new()));
+        let port = Arc::new(Mutex::new(None));
+        let respond = lan_responder(
+            &scope,
+            &mc,
+            &mut beacon_rx,
+            &mut confirm_rx,
+            &key,
+            "session",
+            "udp",
+            &nonces,
+            &port,
+        );
+        let client = async {
+            let mut buf = [0; 4096];
+            loop {
+                let (n, _) = peer.recv_from(&mut buf).await.unwrap();
+                let msg = lan_decode(&key, &buf[..n]).unwrap();
+                if msg.kind == "R" {
+                    let response: LanResponse = lan_unmarshal(&msg).unwrap();
+                    let confirm = LanConfirm {
+                        nonce_b: response.nonce_b,
+                        transport: "udp".into(),
+                        ip: "127.0.0.2".into(),
+                        port: peer_addr.port() as i64,
+                    };
+                    confirm_tx
+                        .send((
+                            lan_decode(&key, &lan_encode(&key, "C", &confirm)).unwrap(),
+                            peer_addr,
+                        ))
+                        .await
+                        .unwrap();
+                    break;
+                }
+            }
+            loop {
+                let (n, _) = peer.recv_from(&mut buf).await.unwrap();
+                let msg = lan_decode(&key, &buf[..n]).unwrap();
+                if msg.kind == "A" {
+                    let ack: LanAck = lan_unmarshal(&msg).unwrap();
+                    assert_eq!(ack.nonce_a, "nonce-a");
+                    break;
+                }
+            }
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_millis(500), async {
+            tokio::join!(respond, client)
+        })
+        .await
+        .expect("discovery must leave at least half the LAN budget for punching");
+        let result = result.unwrap();
+        assert_eq!(result.remote_ip, "127.0.0.2");
+        assert_eq!(result.remote_port, peer_addr.port());
+        assert_eq!(result.transport, "udp");
+    }
 }

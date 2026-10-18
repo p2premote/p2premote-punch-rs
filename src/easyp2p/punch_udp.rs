@@ -339,8 +339,8 @@ pub async fn auto_p2p_udp_nat_traversal(
         let remote_addr = remote_addr.clone();
         let err_tx = err_tx.clone();
         tokio::spawn(async move {
-            // server role: first ping is delayed 2s
-            if !is_client {
+            // Public NAT punching staggers roles; LAN round 0 must send immediately.
+            if !is_client && round != 0 {
                 tokio::select! {
                     _ = ctx.stop.wait() => return,
                     _ = round_scope.sleep_until_deadline(Duration::from_secs(2)) => {}
@@ -350,7 +350,11 @@ pub async fn auto_p2p_udp_nat_traversal(
                 if i > 0 {
                     tokio::select! {
                         _ = ctx.stop.wait() => return,
-                        _ = round_scope.sleep_until_deadline(Duration::from_secs(1)) => {}
+                        _ = round_scope.sleep_until_deadline(if round == 0 {
+                            Duration::from_millis(100)
+                        } else {
+                            Duration::from_secs(1)
+                        }) => {}
                     }
                 }
                 if ctx.stop.is_stopped() || round_scope.expired() {
@@ -983,6 +987,56 @@ async fn bind_rsp_sockets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lan_server_retries_lost_first_probe_within_one_second() {
+        let (peer, local_addr, info) = loop {
+            let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let local = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let local_addr = local.local_addr().unwrap();
+            let remote = peer.local_addr().unwrap().to_string();
+            let info = P2PAddressInfo {
+                network: "udp4".into(),
+                local_lan: local_addr.to_string(),
+                local_nat: local_addr.to_string(),
+                remote_lan: remote.clone(),
+                remote_nat: remote,
+                local_nat_type: "easy".into(),
+                remote_nat_type: "easy".into(),
+                ..Default::default()
+            };
+            if !candidates::select_role(&info) {
+                break (peer, local_addr, info);
+            }
+        };
+        let echo = tokio::spawn(async move {
+            let mut buf = [0; 1024];
+            let (first_n, first_source) = peer.recv_from(&mut buf).await.unwrap();
+            assert!(first_n > 0);
+            assert_eq!(first_source, local_addr);
+            // Deliberately drop the first probe: a 1s retry interval would fail.
+            let (n, source) = peer.recv_from(&mut buf).await.unwrap();
+            assert_eq!(source, local_addr);
+            peer.send_to(&buf[..n], source).await.unwrap();
+        });
+        let session = P2PSessionContext {
+            shared_key: [0; 32],
+            signal: None,
+            local_public_ipv4_count: 1,
+        };
+        let scope = Scope::from_timeout(Duration::from_secs(1));
+        let result =
+            auto_p2p_udp_nat_traversal(&scope, "udp4", "lan-fast-server", &info, &session, 0).await;
+        if result.is_err() {
+            echo.abort();
+        }
+        let (connection, is_client) =
+            result.expect("LAN server must actively probe before the 1s deadline");
+        assert!(!is_client);
+        assert_eq!(connection.remote_addr().to_string(), info.remote_lan);
+        assert!(!scope.expired());
+        echo.await.unwrap();
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn local_probe_timeout_keeps_timeout_code_before_outer_deadline() {
