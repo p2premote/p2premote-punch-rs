@@ -81,9 +81,112 @@ impl std::error::Error for StartError {
 
 pub struct TunnelStop {
     token: Arc<CancelToken>,
+    diagnostics: Arc<ForwardState>,
+}
+
+/// Bounded data-plane evidence; contains no payloads or credentials.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ForwardDiagnostics {
+    pub transport: String,
+    pub local_to_peer_packets: u64,
+    pub peer_to_local_packets: u64,
+    pub local_to_peer_bytes: u64,
+    pub peer_to_local_bytes: u64,
+    pub last_local_to_peer_unix_ms: Option<u64>,
+    pub last_peer_to_local_unix_ms: Option<u64>,
+    pub exit_direction: Option<String>,
+    pub exit_reason: Option<String>,
+    pub os_error: Option<i32>,
+}
+
+#[derive(Default)]
+struct ForwardState {
+    // Per-direction packet count, byte count and last successful forward time.
+    // Keep the forwarding hot path free of mutex contention.
+    counters: [std::sync::atomic::AtomicU64; 6],
+    details: std::sync::Mutex<ForwardDiagnostics>,
+}
+
+impl ForwardState {
+    fn snapshot(&self) -> ForwardDiagnostics {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut snapshot = self.details.lock().unwrap().clone();
+        snapshot.local_to_peer_packets = self.counters[0].load(Relaxed);
+        snapshot.local_to_peer_bytes = self.counters[1].load(Relaxed);
+        snapshot.last_local_to_peer_unix_ms = match self.counters[2].load(Relaxed) {
+            0 => None,
+            time => Some(time),
+        };
+        snapshot.peer_to_local_packets = self.counters[3].load(Relaxed);
+        snapshot.peer_to_local_bytes = self.counters[4].load(Relaxed);
+        snapshot.last_peer_to_local_unix_ms = match self.counters[5].load(Relaxed) {
+            0 => None,
+            time => Some(time),
+        };
+        snapshot
+    }
+}
+
+struct ForwardGuard {
+    token: Arc<CancelToken>,
+    diagnostics: Arc<ForwardState>,
+    direction: &'static str,
+    failed: bool,
+}
+
+impl ForwardGuard {
+    fn packet(&self, bytes: usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let offset = if self.direction == "local_to_peer" {
+            0
+        } else {
+            3
+        };
+        self.diagnostics.counters[offset].fetch_add(1, Relaxed);
+        self.diagnostics.counters[offset + 1].fetch_add(bytes as u64, Relaxed);
+        self.diagnostics.counters[offset + 2].store(now, Relaxed);
+    }
+
+    fn fail(&mut self, operation: &str, error: &std::io::Error) {
+        if self.token.is_cancelled() {
+            return;
+        }
+        self.failed = true;
+        let mut state = self.diagnostics.details.lock().unwrap();
+        if state.exit_reason.is_none() {
+            state.exit_direction = Some(self.direction.into());
+            state.exit_reason = Some(format!("{operation}: {:?}: {error}", error.kind()));
+            state.os_error = error.raw_os_error();
+            drop(state);
+            crate::p2plog!("forwarder failed: {:?}", self.diagnostics.snapshot());
+        }
+    }
+}
+
+impl Drop for ForwardGuard {
+    fn drop(&mut self) {
+        // An unexpected exit must not leave the other direction orphaned.
+        if !self.token.is_cancelled() {
+            if !self.failed {
+                let mut state = self.diagnostics.details.lock().unwrap();
+                if state.exit_reason.is_none() {
+                    state.exit_direction = Some(self.direction.into());
+                    state.exit_reason = Some("unexpected_task_exit".into());
+                }
+            }
+            self.token.cancel();
+        }
+    }
 }
 
 impl TunnelStop {
+    pub fn diagnostics(&self) -> ForwardDiagnostics {
+        self.diagnostics.snapshot()
+    }
     pub fn stop(&self) {
         self.token.cancel();
     }
@@ -99,6 +202,77 @@ mod failure_tests {
     use super::*;
     use crate::easyp2p::candidates::{self, PunchingAddressInfo};
     use crate::error::ErrorCode;
+
+    #[tokio::test]
+    async fn forwarder_reports_tcp_eof_with_counters_and_stops_both_directions() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (mut remote, _) = listener.accept().await.unwrap();
+        let local = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = local.local_addr().unwrap();
+        let wg = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let token = Arc::new(CancelToken::new());
+        let diagnostics = Arc::new(ForwardState::default());
+        spawn_forwarders(
+            local,
+            P2PConn::Tcp(super::super::punch_tcp::TcpPunchedConn {
+                stream,
+                remote: listener.local_addr().unwrap(),
+            }),
+            wg.local_addr().unwrap(),
+            token.clone(),
+            diagnostics.clone(),
+        );
+        tokio::time::timeout(Duration::from_secs(3), async {
+            wg.send_to(b"abc", local_addr).await.unwrap();
+            let mut frame = [0u8; 5];
+            remote.read_exact(&mut frame).await.unwrap();
+            assert_eq!(&frame, b"\x03\x00abc");
+            remote.write_all(b"\x02\x00ok").await.unwrap();
+            let mut buf = [0u8; 8];
+            let (len, _) = wg.recv_from(&mut buf).await.unwrap();
+            assert_eq!(&buf[..len], b"ok");
+            drop(remote);
+            token.cancelled().await;
+            loop {
+                if UdpSocket::bind(local_addr).await.is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let state = diagnostics.snapshot();
+        assert_eq!(state.local_to_peer_packets, 1);
+        assert_eq!(state.peer_to_local_packets, 1);
+        assert_eq!(state.local_to_peer_bytes, 3);
+        assert_eq!(state.peer_to_local_bytes, 2);
+        assert_eq!(state.exit_direction.as_deref(), Some("peer_to_local"));
+        assert!(state
+            .exit_reason
+            .as_deref()
+            .unwrap()
+            .contains("tcp_read_header"));
+    }
+
+    #[test]
+    fn normal_stop_does_not_report_a_forwarding_failure() {
+        let token = Arc::new(CancelToken::new());
+        let diagnostics = Arc::new(ForwardState::default());
+        let guard = ForwardGuard {
+            token: token.clone(),
+            diagnostics: diagnostics.clone(),
+            direction: "local_to_peer",
+            failed: false,
+        };
+        token.cancel();
+        drop(guard);
+        assert!(diagnostics.snapshot().exit_reason.is_none());
+    }
 
     #[test]
     fn rejected_symmetric_pair_survives_failure_wrapping_and_json() {
@@ -746,11 +920,18 @@ pub async fn start_udp_tunnel_with_signal(
     };
 
     let token = Arc::new(CancelToken::new());
-    spawn_forwarders(local_socket, conn_info.conn, target_addr, token.clone());
+    let diagnostics = Arc::new(ForwardState::default());
+    spawn_forwarders(
+        local_socket,
+        conn_info.conn,
+        target_addr,
+        token.clone(),
+        diagnostics.clone(),
+    );
 
     Ok(StartUdpTunnelOutcome {
         result,
-        stop: TunnelStop { token },
+        stop: TunnelStop { token, diagnostics },
     })
 }
 
@@ -784,19 +965,35 @@ async fn dial_udp_forward(
     }))
 }
 
-/// copyPackets ×2: local WG endpoint ↔ punched P2P connection. The local side
-/// is always a UDP socket (the WG endpoint is UDP); when the P2P transport is
-/// TCP the datagrams are carried over the stream with a 2-byte little-endian
-/// length frame per datagram (netx.FramedConn semantics). The local socket
-/// only accepts packets sourced from the fixed target (BoundUDPConn filter) —
-/// a connected socket would surface async ECONNREFUSED from stray ICMP.
+/// Cancellation also interrupts pending stream writes and partial frame reads.
+fn spawn_forwarder(
+    token: Arc<CancelToken>,
+    future: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    tokio::spawn(async move {
+        tokio::select! {
+            biased;
+            _ = token.cancelled() => {},
+            _ = future => {},
+        }
+    });
+}
+
+/// Bridge the local WG UDP endpoint to the punched UDP or framed TCP transport.
+/// Accept local packets only from the fixed WG target.
 fn spawn_forwarders(
     local: UdpSocket,
     p2p_conn: P2PConn,
     target_addr: SocketAddr,
     token: Arc<CancelToken>,
+    diagnostics: Arc<ForwardState>,
 ) {
     let local = Arc::new(local);
+    diagnostics.details.lock().unwrap().transport = match &p2p_conn {
+        P2PConn::Udp(_) => "udp",
+        P2PConn::Tcp(_) => "tcp",
+    }
+    .into();
     match p2p_conn {
         P2PConn::Udp(p2p) => {
             // local → p2p
@@ -804,7 +1001,14 @@ fn spawn_forwarders(
                 let local = local.clone();
                 let p2p = p2p.clone();
                 let token = token.clone();
-                tokio::spawn(async move {
+                let diagnostics = diagnostics.clone();
+                spawn_forwarder(token.clone(), async move {
+                    let mut guard = ForwardGuard {
+                        token: token.clone(),
+                        diagnostics,
+                        direction: "local_to_peer",
+                        failed: false,
+                    };
                     let mut buffers = udp_forward_batch_buffers();
                     let mut packets = Vec::with_capacity(UDP_FORWARD_BATCH_SIZE);
                     loop {
@@ -834,10 +1038,12 @@ fn spawn_forwarders(
                                                 continue;
                                             }
                                             if let Err(err) = p2p.send(&buffers[index][..n]).await {
+                                                guard.fail("fwd local→p2p send error", &err);
                                                 crate::p2plog!("fwd local→p2p send error: {}", err);
                                                 send_failed = true;
                                                 break;
                                             }
+                                            guard.packet(n);
                                         }
                                         if send_failed {
                                             break;
@@ -847,6 +1053,7 @@ fn spawn_forwarders(
                                         if err.kind() == std::io::ErrorKind::ConnectionReset {
                                             continue; // stray ICMP on Windows
                                         }
+                                        guard.fail("fwd local→p2p recv error", &err);
                                         crate::p2plog!("fwd local→p2p recv error: {}", err);
                                         break;
                                     }
@@ -860,7 +1067,14 @@ fn spawn_forwarders(
             {
                 let local = local.clone();
                 let token = token.clone();
-                tokio::spawn(async move {
+                let diagnostics = diagnostics.clone();
+                spawn_forwarder(token.clone(), async move {
+                    let mut guard = ForwardGuard {
+                        token: token.clone(),
+                        diagnostics,
+                        direction: "peer_to_local",
+                        failed: false,
+                    };
                     let mut buffers = udp_forward_batch_buffers();
                     let mut lengths = Vec::with_capacity(UDP_FORWARD_BATCH_SIZE);
                     loop {
@@ -886,10 +1100,12 @@ fn spawn_forwarders(
                                         let mut send_failed = false;
                                         for (index, &n) in lengths.iter().enumerate() {
                                             if let Err(err) = local.send_to(&buffers[index][..n], target_addr).await {
+                                                guard.fail("fwd p2p→local send error", &err);
                                                 crate::p2plog!("fwd p2p→local send error: {}", err);
                                                 send_failed = true;
                                                 break;
                                             }
+                                            guard.packet(n);
                                         }
                                         if send_failed {
                                             break;
@@ -899,6 +1115,7 @@ fn spawn_forwarders(
                                         if err.kind() == std::io::ErrorKind::ConnectionReset {
                                             continue; // stray ICMP on Windows
                                         }
+                                        guard.fail("fwd p2p→local recv error", &err);
                                         crate::p2plog!("fwd p2p→local recv error: {}", err);
                                         break;
                                     }
@@ -915,7 +1132,14 @@ fn spawn_forwarders(
             {
                 let local = local.clone();
                 let token = token.clone();
-                tokio::spawn(async move {
+                let diagnostics = diagnostics.clone();
+                spawn_forwarder(token.clone(), async move {
+                    let mut guard = ForwardGuard {
+                        token: token.clone(),
+                        diagnostics,
+                        direction: "local_to_peer",
+                        failed: false,
+                    };
                     use tokio::io::AsyncWriteExt;
                     let mut buf = vec![0u8; netx::UDP_FORWARD_BUF];
                     let mut frame = Vec::with_capacity(netx::UDP_FORWARD_BUF + 2);
@@ -933,14 +1157,17 @@ fn spawn_forwarders(
                                         frame.extend_from_slice(&(n as u16).to_le_bytes());
                                         frame.extend_from_slice(&buf[..n]);
                                         if let Err(err) = wr.write_all(&frame).await {
+                                            guard.fail("fwd local→p2p(tcp) write error", &err);
                                             crate::p2plog!("fwd local→p2p(tcp) write error: {}", err);
                                             break;
                                         }
+                                        guard.packet(n);
                                     }
                                     Err(err) => {
                                         if err.kind() == std::io::ErrorKind::ConnectionReset {
                                             continue;
                                         }
+                                        guard.fail("fwd local→p2p(tcp) recv error", &err);
                                         crate::p2plog!("fwd local→p2p(tcp) recv error: {}", err);
                                         break;
                                     }
@@ -954,7 +1181,13 @@ fn spawn_forwarders(
             {
                 let local = local;
                 let token = token;
-                tokio::spawn(async move {
+                spawn_forwarder(token.clone(), async move {
+                    let mut guard = ForwardGuard {
+                        token: token.clone(),
+                        diagnostics,
+                        direction: "peer_to_local",
+                        failed: false,
+                    };
                     use tokio::io::AsyncReadExt;
                     let mut hdr = [0u8; 2];
                     let mut payload = vec![0u8; u16::MAX as usize];
@@ -962,8 +1195,8 @@ fn spawn_forwarders(
                         tokio::select! {
                             _ = token.cancelled() => break,
                             read = rd.read_exact(&mut hdr) => {
-                                if read.is_err() {
-                                    crate::p2plog!("fwd p2p→local(tcp) header read error");
+                                if let Err(err) = read {
+                                    guard.fail("tcp_read_header", &err);
                                     break;
                                 }
                                 let len = u16::from_le_bytes(hdr) as usize;
@@ -975,6 +1208,7 @@ fn spawn_forwarders(
                                     _ = token.cancelled() => break,
                                     read = rd.read_exact(&mut payload[..len]) => {
                                         if let Err(err) = read {
+                                            guard.fail("tcp_read_payload", &err);
                                             crate::p2plog!("fwd p2p→local(tcp) read error: {}", err);
                                             ok = false;
                                         }
@@ -984,9 +1218,11 @@ fn spawn_forwarders(
                                     break;
                                 }
                                 if let Err(err) = local.send_to(&payload[..len], target_addr).await {
+                                    guard.fail("fwd p2p→local(tcp) send error", &err);
                                     crate::p2plog!("fwd p2p→local(tcp) send error: {}", err);
                                     break;
                                 }
+                                guard.packet(len);
                             }
                         }
                     }

@@ -86,8 +86,7 @@ fn handle_start_udp_tunnel_json(input: &str) -> String {
         Ok(tunnel) => {
             let mut result = tunnel.result;
             let stop = tunnel.stop;
-            let handle_id =
-                handles::register_udp_tunnel(result.clone(), Box::new(move || stop.stop()));
+            let handle_id = handles::register_udp_tunnel(result.clone(), stop);
             result.handle_id = handle_id;
             encode_tunnel_result(&result)
         }
@@ -415,6 +414,12 @@ pub mod api {
 
     use super::{easyp2p, handles, types};
 
+    pub fn udp_tunnel_diagnostics(
+        handle_id: &str,
+    ) -> Option<easyp2p::udp_tunnel::ForwardDiagnostics> {
+        handles::udp_tunnel_diagnostics(handle_id)
+    }
+
     pub async fn start_udp_tunnel_with_signal(
         request: types::UdpTunnelInput,
         budget: Duration,
@@ -424,8 +429,7 @@ pub mod api {
             easyp2p::udp_tunnel::start_udp_tunnel_with_signal(request, budget, Some(call)).await?;
         let mut result = tunnel.result;
         let stop = tunnel.stop;
-        result.handle_id =
-            handles::register_udp_tunnel(result.clone(), Box::new(move || stop.stop()));
+        result.handle_id = handles::register_udp_tunnel(result.clone(), stop);
         Ok(result)
     }
 
@@ -459,8 +463,7 @@ pub mod api {
         let tunnel = easyp2p::udp_tunnel::start_udp_tunnel(request, budget).await?;
         let mut result = tunnel.result;
         let stop = tunnel.stop;
-        result.handle_id =
-            handles::register_udp_tunnel(result.clone(), Box::new(move || stop.stop()));
+        result.handle_id = handles::register_udp_tunnel(result.clone(), stop);
         Ok(result)
     }
 
