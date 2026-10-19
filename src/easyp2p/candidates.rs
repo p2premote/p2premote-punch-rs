@@ -115,15 +115,13 @@ fn ip4_is_private(v4: std::net::Ipv4Addr) -> bool {
 
 /// extractIP: host part of "host:port" (bare IPs pass through).
 pub fn extract_ip(addr: &str) -> String {
+    // A bare IPv6 literal contains colons but has no port separator.
+    if addr.parse::<IpAddr>().is_ok() {
+        return addr.to_string();
+    }
     match netx::split_host_port(addr) {
         Some((host, _)) => host,
-        None => {
-            if addr.parse::<IpAddr>().is_ok() {
-                addr.to_string()
-            } else {
-                String::new()
-            }
-        }
+        None => String::new(),
     }
 }
 
@@ -516,3 +514,7 @@ pub fn collect_udp4_nat_alternatives(results: &mut [P2PAddressInfo]) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "candidates_tests.rs"]
+mod coverage_tests;

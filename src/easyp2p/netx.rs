@@ -254,6 +254,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn endpoint_parsers_reject_missing_ports_and_malformed_brackets() {
+        for input in ["", "host", "[::1", "[::1]", "[::1]:bad", "host:65536", "host:-1"] {
+            assert!(split_host_port(input).is_none(),"{input}");
+        }
+        for input in ["1.2.3.4", "::1", "host:80", "[invalid]:80", "[::1]:bad", ""] {
+            assert!(parse_addr(input).is_none(),"{input}");
+        }
+        assert_eq!(parse_addr("1.2.3.4:80"),Some("1.2.3.4:80".parse().unwrap()));
+        assert_eq!(parse_addr("[::1]:80"),Some("[::1]:80".parse().unwrap()));
+        assert_eq!(parse_addr("[1.2.3.4]:80"),Some("1.2.3.4:80".parse().unwrap()));
+        assert_eq!(join_host_port("[::1]",80),"[::1]:80");
+    }
+
+    #[test]
     fn split_join_roundtrip() {
         assert_eq!(
             split_host_port("1.2.3.4:5678"),

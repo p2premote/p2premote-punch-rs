@@ -51,6 +51,10 @@ const STUN_BINDING_SUCCESS: u16 = 0x0101;
 const ATTR_MAPPED_ADDRESS: u16 = 0x0001;
 const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
 
+#[cfg(test)]
+#[path = "stun_tests.rs"]
+mod coverage_tests;
+
 pub fn networks_for_stun(network: &str) -> Result<Vec<String>> {
     match network {
         "any" => Ok(vec!["tcp6".into(), "tcp4".into(), "udp4".into()]),

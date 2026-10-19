@@ -42,6 +42,10 @@ const SELECTED_TRAVERSAL_INTERNET: &str = "internet";
 const SELECTED_TRAVERSAL_LAN: &str = "lan";
 const TRANSPORT_MODE_PLAIN: &str = "plain";
 
+#[cfg(test)]
+#[path = "udp_tunnel_tests.rs"]
+mod coverage_tests;
+
 /// Error carrying the structured failure result for the FFI (UDPTunnelError).
 #[derive(Debug)]
 pub struct StartError {
