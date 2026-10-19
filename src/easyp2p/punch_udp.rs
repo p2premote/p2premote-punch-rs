@@ -23,6 +23,8 @@ const RPP_TIMEOUT_SECS: u64 = 7;
 pub struct PunchedConn {
     socket: Arc<UdpSocket>,
     remote: SocketAddr,
+    // Cloned connections retain the lease until the final socket owner exits.
+    port_mappings: Vec<Arc<super::portmap::MappingLease>>,
 }
 
 impl PunchedConn {
@@ -207,13 +209,16 @@ pub async fn auto_p2p_udp_nat_traversal(
     // particular, do not enable SO_REUSEADDR on Windows; sharing this exact
     // STUN-discovered port can make inbound punch packets land on a different
     // socket and also changes the later close-and-rebind semantics.
-    let std_socket = netx::listen_udp(local_addr, false).map_err(|e| {
-        P2pError::with_source(
-            ErrorCode::TraversalPunchIoFailed,
-            "error binding UDP address",
-            e,
-        )
-    })?;
+    let std_socket = super::portmap::take_socket(&sess_ctx.port_mappings, local_addr)
+        .map(Ok)
+        .unwrap_or_else(|| netx::listen_udp(local_addr, false))
+        .map_err(|e| {
+            P2pError::with_source(
+                ErrorCode::TraversalPunchIoFailed,
+                "error binding UDP address",
+                e,
+            )
+        })?;
     std_socket
         .set_nonblocking(true)
         .map_err(|e| P2pError::new(ErrorCode::TraversalPunchIoFailed, e.to_string()))?;
@@ -558,7 +563,16 @@ pub async fn auto_p2p_udp_nat_traversal(
     };
 
     match final_result {
-        Ok(conn) => Ok((conn, is_client)),
+        Ok(mut conn) => {
+            if let Ok(local) = conn.socket.local_addr() {
+                conn.port_mappings = super::portmap::for_socket(&sess_ctx.port_mappings, local);
+                super::portmap::confirm_candidate(&conn.port_mappings, &p2p_info.local_nat);
+                if !conn.port_mappings.is_empty() {
+                    crate::p2pevent!("upnp: tunnel established on mapped local socket {}; selected local candidate={}", local, p2p_info.local_nat);
+                }
+            }
+            Ok((conn, is_client))
+        }
         Err(err) => Err(err),
     }
 }
@@ -585,6 +599,7 @@ async fn finalize_main_conn(
     Ok(PunchedConn {
         socket: connected,
         remote,
+        port_mappings: Vec::new(),
     })
 }
 
@@ -600,6 +615,7 @@ async fn finalize_rsp_conn(
     Ok(PunchedConn {
         socket: connected,
         remote,
+        port_mappings: Vec::new(),
     })
 }
 
@@ -1020,6 +1036,7 @@ mod tests {
             peer.send_to(&buf[..n], source).await.unwrap();
         });
         let session = P2PSessionContext {
+            port_mappings: Vec::new(),
             shared_key: [0; 32],
             signal: None,
             local_public_ipv4_count: 1,
@@ -1056,6 +1073,7 @@ mod tests {
             ..Default::default()
         };
         let session = P2PSessionContext {
+            port_mappings: Vec::new(),
             shared_key: [0; 32],
             signal: None,
             local_public_ipv4_count: 1,

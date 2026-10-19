@@ -678,6 +678,7 @@ pub async fn easy_p2p_lan(
     };
     // LAN mode has no MQTT session; round=0 skips round sync entirely.
     let sess_ctx = P2PSessionContext {
+        port_mappings: Vec::new(),
         shared_key,
         signal: None,
         local_public_ipv4_count: 1,

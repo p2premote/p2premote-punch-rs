@@ -22,6 +22,7 @@ pub struct P2PSessionContext {
     /// None for LAN discovery; an explicitly selected transport otherwise.
     pub signal: Option<Arc<SignalSession>>,
     pub local_public_ipv4_count: usize,
+    pub port_mappings: Vec<Arc<super::portmap::MappingLease>>,
 }
 
 /// Transport-agnostic punched connection: UDP socket or TCP stream.
@@ -187,7 +188,12 @@ pub async fn do_auto_p2p_ex2(
         return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
     }
 
-    let my_addresses = detect_nat_address_info(scope, networks, bind).await?;
+    let (detected, discovery) = tokio::join!(
+        detect_nat_address_info(scope, networks, bind),
+        super::portmap::discover(scope, networks),
+    );
+    let mut my_addresses = detected?;
+    let port_mappings = super::portmap::augment(scope, &mut my_addresses, discovery).await;
     if scope.expired() {
         return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
     }
@@ -332,6 +338,7 @@ pub async fn do_auto_p2p_ex2(
     }
 
     let sess_ctx = P2PSessionContext {
+        port_mappings,
         shared_key,
         signal: Some(signal.clone()),
         local_public_ipv4_count,
