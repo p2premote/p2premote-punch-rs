@@ -6,6 +6,11 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "android")]
+use super::android::{search_gateway, Protected as Tokio};
+#[cfg(target_os = "android")]
+use igd_next::{aio::Gateway, PortMappingProtocol::UDP, SearchOptions};
+#[cfg(not(target_os = "android"))]
 use igd_next::{
     aio::{
         tokio::{search_gateway, Tokio},
@@ -128,6 +133,10 @@ pub async fn discover(scope: &Scope, networks: &[String]) -> Discovery {
     {
         return Discovery(HashMap::new());
     }
+    #[cfg(target_os = "android")]
+    let Some(_discovery_guard) = super::android::DiscoveryGuard::begin() else {
+        return Discovery(HashMap::new());
+    };
     let interfaces = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()

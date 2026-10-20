@@ -4,7 +4,8 @@ import sys
 from pathlib import Path
 
 report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-expected = {"src/easyp2p/portmap.rs", "src/easyp2p/portmap/desktop.rs"}
+expected = {"src/easyp2p/portmap.rs", "src/easyp2p/portmap/desktop.rs",
+            "src/easyp2p/portmap/android.rs"}
 files = {}
 for dataset in report["data"]:
     for entry in dataset["files"]:

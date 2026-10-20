@@ -1,14 +1,24 @@
-# Desktop UPnP port mapping
+# UPnP port mapping
 
-The `port-mapping` feature compiles UPnP IGD support on Windows, macOS and Linux.
-It is off by default in this library. The desktop core enables the feature and
-automatically enables mapping at service startup. There is no persisted UPnP
-setting, settings API, UI switch or status polling. Android and iOS compile inert
-implementations even if a caller enables the feature; they perform no SSDP,
-SOAP, mapping or renewal work.
+The `port-mapping` feature compiles UPnP IGD support on Windows, macOS, Linux and
+Android. It is off by default in this library. The desktop core and Android JNI
+enable it automatically at service startup. There is no persisted UPnP setting,
+settings API, UI switch or status polling. Other platforms, including iOS,
+compile inert implementations even if a caller enables the feature.
+
+Android discovers gateways only while the underlying network is Wi-Fi. A shared,
+reference-counted discovery guard holds a Wi-Fi multicast lock during discovery
+and releases it on completion or cancellation. Its SSDP and HTTP sockets pass
+through the existing VPN protect callback before binding or connecting, including
+renewal and deletion requests. The JNI discovery hook must be registered before
+enabling mapping. Service shutdown keeps socket protection available during the
+bounded cleanup window, then unregisters both callbacks and releases the lock.
+Gateway HTTP responses are bounded to 256 KiB; resource URLs must share the
+advertising gateway's origin. Android diagnostics also reach the native logcat
+callback.
 
 Only UDP4 tunnel ports are mapped. STUN, LAN, IPv6 and TCP candidates remain
-available. The setting is local policy and is not included in peer traversal
+available. Automatic mapping policy is not included in peer traversal
 preferences. Mapped addresses use the existing `udp4` / `easy` wire format, so a
 peer does not need its own UPnP implementation. This describes one candidate's
 reachability, not a replacement for the device's STUN NAT classification.
@@ -57,7 +67,8 @@ bash scripts/check-upnp-coverage.sh
 This requires Python, `cargo-llvm-cov` and the Rust 1.94.1 LLVM tools component.
 The script opts the coverage process into unstable branch instrumentation and
 does not change release build settings. `UPNP_TEST_TOOLCHAIN` can select another
-compatible toolchain. It checks the production `portmap.rs` and `portmap/desktop.rs`
+compatible toolchain. It checks the production `portmap.rs`, `portmap/desktop.rs`
+and `portmap/android.rs`
 files individually, excludes test sources, rejects reports without branch data,
 and fails below 90% line or branch coverage. Reports are written to
 `target/upnp-coverage/coverage.json` and `target/upnp-coverage/summary.json`.

@@ -407,6 +407,8 @@ pub fn p2p_logf(message: &str) {
 /// records are intentionally routed through the host application's tracing
 /// subscriber so service builds persist them in p2premote-service.log.
 pub fn p2p_event_line(message: &str) {
+    #[cfg(target_os = "android")]
+    p2p_diag_line(message);
     tracing::info!(target: "p2premote_punch::diagnostics", "[P2P-DIAG] {}", message);
 }
 

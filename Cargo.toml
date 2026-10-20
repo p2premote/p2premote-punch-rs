@@ -13,7 +13,7 @@ crate-type = ["staticlib", "rlib"]
 default = ["ffi", "legacy-mqtt"]
 ffi = []
 legacy-mqtt = ["dep:rumqttc"]
-port-mapping = ["dep:igd-next"]
+port-mapping = ["dep:igd-next", "dep:xmltree", "dep:async-trait"]
 
 # The interop driver exercises the exported C ABI, which only exists with ffi.
 [[example]]
@@ -44,8 +44,10 @@ tracing = "0.1"
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 
-[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos", target_os = "android"))'.dependencies]
 igd-next = { version = "0.16.2", optional = true, default-features = false, features = ["aio_tokio"] }
+xmltree = { version = "0.10", optional = true }
+async-trait = { version = "0.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Networking_WinSock", "Win32_Foundation"] }
