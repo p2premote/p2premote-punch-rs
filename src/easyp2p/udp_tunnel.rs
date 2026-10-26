@@ -510,6 +510,31 @@ async fn establish_internet_udp_p2p(
     token: &str,
     external: Option<Arc<SignalCall>>,
 ) -> (Option<P2PConnInfo>, i32, Option<StartError>) {
+    let signal = external.clone();
+    establish_internet_udp_p2p_with(scope, network, external, || {
+        p2p::easy_p2p_mp_with_signal(
+            scope,
+            network,
+            token,
+            EasyP2PMPOptions {
+                bind: bind_ip.to_string(),
+            },
+            signal.clone(),
+        )
+    })
+    .await
+}
+
+pub(super) async fn establish_internet_udp_p2p_with<F, Fut>(
+    scope: &Scope,
+    network: &str,
+    external: Option<Arc<SignalCall>>,
+    mut punch: F,
+) -> (Option<P2PConnInfo>, i32, Option<StartError>)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<P2PConnInfo, P2pError>>,
+{
     const RETRY_DELAY: Duration = Duration::from_secs(2);
     let mut attempt: i32 = 1;
     // Furthest-stage failure across attempts. Once the address exchange has
@@ -525,17 +550,10 @@ async fn establish_internet_udp_p2p(
             attempt,
             network
         );
-        match p2p::easy_p2p_mp_with_signal(
-            scope,
-            network,
-            token,
-            EasyP2PMPOptions {
-                bind: bind_ip.to_string(),
-            },
-            external.clone(),
-        )
-        .await
-        {
+        if let Some(call) = &external {
+            call.begin_probe_attempt((attempt - 1) as u8);
+        }
+        match punch().await {
             Ok(conn_info) => return (Some(conn_info), attempt, None),
             Err(err) => {
                 let failed_at_exchange = err.details().is_none();
@@ -554,7 +572,11 @@ async fn establish_internet_udp_p2p(
                     exchange_ok_attempt = attempt;
                     probe_error = Some(err.clone());
                 }
-                if err.is_unretryable() || external.is_some() {
+                if err.is_unretryable()
+                    || external
+                        .as_ref()
+                        .is_some_and(|call| !call.native_retry_supported())
+                {
                     return (
                         None,
                         attempt,

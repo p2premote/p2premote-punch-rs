@@ -203,6 +203,9 @@ pub async fn do_auto_p2p_ex2(
         CAP_CANONICAL_LAN_PROBE.to_string(),
         CAP_MULTI_EXIT_UDP_PUNCH.to_string(),
     ];
+    if matches!(signal.as_ref(), SignalSession::External(_)) {
+        my_caps.push(super::signal::CAP_NATIVE_RETRY.to_string());
+    }
     if std::env::var("CAP_MEP_DEBUG").as_deref() == Ok("0") {
         for cap in my_caps.iter_mut() {
             if cap == CAP_MULTI_EXIT_UDP_PUNCH {
@@ -242,6 +245,13 @@ pub async fn do_auto_p2p_ex2(
             None,
         )
         .await?;
+
+    if let SignalSession::External(call) = signal.as_ref() {
+        call.set_peer_native_retry(candidates::has_cap(
+            &remote_payload.caps,
+            super::signal::CAP_NATIVE_RETRY,
+        ));
+    }
 
     crate::p2pevent!(
         "address exchange complete: session={}, broker_index={}, local_addrs={:?}, remote_addrs={:?}, local_caps={:?}, remote_caps={:?}",

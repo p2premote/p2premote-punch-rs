@@ -24,6 +24,7 @@ use super::{
 
 pub const WS_TRANSPORT: &str = "ws-v1";
 pub const MQTT_TRANSPORT: &str = "mqtt-legacy";
+pub const CAP_NATIVE_RETRY: &str = "ws-native-retry-v1";
 pub const MAX_DATA_BYTES: usize = 16 * 1024;
 const MAX_INBOX_BYTES: usize = 128 * 1024;
 const MAX_INBOX_MESSAGES: usize = 32;
@@ -171,6 +172,8 @@ pub struct SignalFrame {
     pub call_id: String,
     pub channel: String,
     pub step: u8,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub probe_attempt: u8,
     pub message_id: String,
     pub packet: SecurePayload,
 }
@@ -193,6 +196,8 @@ struct Binding {
     call_id: String,
     channel: String,
     step: u8,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    probe_attempt: u8,
     message_id: String,
 }
 #[derive(Serialize, Deserialize)]
@@ -205,6 +210,7 @@ struct Sealed {
 struct Slot {
     channel: String,
     step: u8,
+    probe_attempt: u8,
 }
 struct CallState {
     inbox: HashMap<Slot, VecDeque<Value>>,
@@ -223,8 +229,8 @@ pub struct ExternalSignalSession {
     closed: Arc<CancelToken>,
 }
 
-/// One configuration exchange or one application network round. The key and
-/// mailbox never span multiple native retries or application rounds.
+/// One configuration exchange or application network round. Native retries
+/// use separate authenticated mailbox slots within the same round deadline.
 pub struct SignalCall {
     identity: SessionIdentity,
     sender: Arc<dyn WireSender>,
@@ -237,6 +243,12 @@ pub struct SignalCall {
     notify: Notify,
     state: Mutex<CallState>,
     sending: tokio::sync::Semaphore,
+    native_retry: std::sync::atomic::AtomicBool,
+    probe_attempt: std::sync::atomic::AtomicU8,
+}
+
+fn is_zero(value: &u8) -> bool {
+    *value == 0
 }
 
 fn receive_timeout_code(channel: &str) -> ErrorCode {
@@ -344,6 +356,8 @@ impl ExternalSignalSession {
                 failure: None,
             }),
             sending: tokio::sync::Semaphore::new(16),
+            native_retry: std::sync::atomic::AtomicBool::new(false),
+            probe_attempt: std::sync::atomic::AtomicU8::new(0),
         });
         calls.insert(call_id.into(), call.clone());
         used.insert(call_id.into());
@@ -437,6 +451,20 @@ impl Drop for ExternalSignalSession {
 }
 
 impl SignalCall {
+    pub fn set_peer_native_retry(&self, supported: bool) {
+        self.native_retry
+            .store(supported, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn native_retry_supported(&self) -> bool {
+        self.native_retry.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(super) fn begin_probe_attempt(&self, attempt: u8) {
+        self.probe_attempt
+            .store(attempt, std::sync::atomic::Ordering::Release);
+    }
+
     pub fn scope(&self, budget: Duration) -> Scope {
         Scope::from_timeout(budget)
             .with_deadline(self.deadline)
@@ -499,6 +527,7 @@ impl SignalCall {
             call_id: frame.call_id.clone(),
             channel: frame.channel.clone(),
             step: frame.step,
+            probe_attempt: frame.probe_attempt,
             message_id: frame.message_id.clone(),
         }
     }
@@ -513,6 +542,9 @@ impl SignalCall {
         if frame.version != 1
             || !valid_id(&frame.message_id)
             || !valid_slot(&frame.call_id, &frame.channel, frame.step)
+            || (frame.probe_attempt > 0
+                && (!self.native_retry_supported()
+                    || !matches!(frame.channel.as_str(), "addresses" | "candidate_sync")))
         {
             return Err(P2pError::new(
                 ErrorCode::SignalReceiveInvalidFrame,
@@ -561,6 +593,7 @@ impl SignalCall {
         let slot = Slot {
             channel: frame.channel,
             step: frame.step,
+            probe_attempt: frame.probe_attempt,
         };
         let bytes = serde_json::to_vec(&sealed.value)?.len();
         let mut state = self.state.lock().unwrap();
@@ -633,6 +666,7 @@ impl SignalCall {
             call_id: self.call_id.clone(),
             channel: slot.channel.clone(),
             step: slot.step,
+            probe_attempt: slot.probe_attempt,
             message_id: crypto::hex(&random),
             packet: SecurePayload {
                 nonce: String::new(),
@@ -700,6 +734,12 @@ impl SignalCall {
         let slot = Slot {
             channel: channel.into(),
             step,
+            probe_attempt: if matches!(channel, "addresses" | "candidate_sync") {
+                self.probe_attempt
+                    .load(std::sync::atomic::Ordering::Acquire)
+            } else {
+                0
+            },
         };
         let remote = match mode {
             EXMODE_MUTUAL => {
@@ -1020,6 +1060,171 @@ mod tests {
         *ba.target.lock().unwrap() = Some(Arc::downgrade(&a));
         (a, b, ab, ba)
     }
+    #[tokio::test]
+    async fn native_retry_exchanges_fresh_addresses_and_sync_without_consuming_old_slots() {
+        let (a, b, ab, _) = pair();
+        let ac = a
+            .register_call("network/2", "abcdefghijklmnop", Duration::from_secs(10))
+            .unwrap();
+        let bc = b
+            .register_call("network/2", "abcdefghijklmnop", Duration::from_secs(10))
+            .unwrap();
+        ac.set_peer_native_retry(true);
+        bc.set_peer_native_retry(true);
+        let scope = Scope::from_timeout(Duration::from_secs(10));
+        for attempt in 0..2 {
+            ac.begin_probe_attempt(attempt);
+            bc.begin_probe_attempt(attempt);
+            let left = format!("left-{attempt}");
+            let right = format!("right-{attempt}");
+            let (ar, br) = tokio::join!(
+                ac.exchange(
+                    EXMODE_MUTUAL,
+                    &left,
+                    "addresses",
+                    0,
+                    &scope,
+                    scope.remaining()
+                ),
+                bc.exchange(
+                    EXMODE_MUTUAL,
+                    &right,
+                    "addresses",
+                    0,
+                    &scope,
+                    scope.remaining()
+                ),
+            );
+            assert_eq!(ar.unwrap(), right);
+            assert_eq!(br.unwrap(), left);
+            let client_sync = "C1".to_string();
+            let server_sync = "S1".to_string();
+            let (ar, br) = tokio::join!(
+                ac.exchange(
+                    EXMODE_MUTUAL,
+                    &client_sync,
+                    "candidate_sync",
+                    1,
+                    &scope,
+                    scope.remaining()
+                ),
+                bc.exchange(
+                    EXMODE_MUTUAL,
+                    &server_sync,
+                    "candidate_sync",
+                    1,
+                    &scope,
+                    scope.remaining()
+                ),
+            );
+            assert_eq!(ar.unwrap(), "S1");
+            assert_eq!(br.unwrap(), "C1");
+        }
+        let sent = ab.sent.lock().unwrap();
+        let first: Value = serde_json::from_str(&sent[0]).unwrap();
+        assert!(first.get("probe_attempt").is_none());
+        // Delayed delivery of an original message cannot fill a retry slot.
+        b.deliver_json("connection", 1, &sent[0]).unwrap();
+        let retry: Value = serde_json::from_str(&sent[2]).unwrap();
+        assert_eq!(retry["probe_attempt"], 1);
+        let mut relabelled: SignalFrame = serde_json::from_value(retry).unwrap();
+        relabelled.probe_attempt = 2;
+        assert!(bc.deliver(relabelled, 0, 0, 0).is_err());
+        assert!(ac.failure().is_none());
+        assert!(bc.failure().is_none());
+    }
+
+    #[tokio::test]
+    async fn native_retry_loop_retries_only_with_peer_support_and_stops_on_terminal_error() {
+        for supported in [false, true] {
+            let (a, _b, _, _) = pair();
+            let call = a
+                .register_call("network/2", "abcdefghijklmnop", Duration::from_secs(10))
+                .unwrap();
+            call.set_peer_native_retry(supported);
+            let scope = Scope::from_timeout(Duration::from_secs(10));
+            let mut invoked = 0;
+            let (_, attempts, error) = super::super::udp_tunnel::establish_internet_udp_p2p_with(
+                &scope,
+                "udp4",
+                Some(call.clone()),
+                || {
+                    invoked += 1;
+                    let code = if invoked == 1 {
+                        ErrorCode::TraversalPunchTimeout
+                    } else {
+                        ErrorCode::NativeInputInvalidArgument
+                    };
+                    std::future::ready(Err(P2pError::new(code, "probe failed")))
+                },
+            )
+            .await;
+            assert_eq!(attempts, if supported { 2 } else { 1 });
+            assert_eq!(invoked, attempts);
+            assert_eq!(
+                error.unwrap().code(),
+                if supported {
+                    ErrorCode::NativeInputInvalidArgument
+                } else {
+                    ErrorCode::TraversalPunchTimeout
+                }
+            );
+            assert!(call.failure().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn native_retry_loop_returns_second_attempt_connection() {
+        let (a, _b, _, _) = pair();
+        let call = a
+            .register_call("network/2", "abcdefghijklmnop", Duration::from_secs(10))
+            .unwrap();
+        call.set_peer_native_retry(true);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let remote = listener.local_addr().unwrap();
+        let (stream, accepted) =
+            tokio::join!(tokio::net::TcpStream::connect(remote), listener.accept());
+        let (_peer, _) = accepted.unwrap();
+        let mut connection = Some(super::super::p2p::P2PConnInfo {
+            conn: super::super::p2p::P2PConn::Tcp(super::super::punch_tcp::TcpPunchedConn {
+                stream: stream.unwrap(),
+                remote,
+            }),
+            shared_key: [0; 32],
+            is_client: true,
+            networks_used: vec!["tcp4".into()],
+            peer_address: remote.to_string(),
+            local_nat_type: "easy".into(),
+            remote_nat_type: "hard".into(),
+            local_lan: String::new(),
+            local_nat: String::new(),
+            remote_lan: String::new(),
+            remote_nat: String::new(),
+        });
+        let scope = Scope::from_timeout(Duration::from_secs(10));
+        let mut invoked = 0;
+        let (result, attempts, error) = super::super::udp_tunnel::establish_internet_udp_p2p_with(
+            &scope,
+            "tcp4",
+            Some(call),
+            || {
+                invoked += 1;
+                std::future::ready(if invoked == 1 {
+                    Err(P2pError::new(
+                        ErrorCode::TraversalPunchTimeout,
+                        "probe timed out",
+                    ))
+                } else {
+                    Ok(connection.take().unwrap())
+                })
+            },
+        )
+        .await;
+        assert_eq!(attempts, 2);
+        assert_eq!(result.unwrap().peer_address, remote.to_string());
+        assert!(error.is_none());
+    }
+
     #[test]
     fn selects_ws_only_with_v2_and_rejects_null() {
         let ws = TransportOffer {
@@ -1374,6 +1579,7 @@ mod tests {
             &Slot {
                 channel: "candidate_sync".into(),
                 step: 1,
+                probe_attempt: 0,
             },
             serde_json::json!("C1"),
             ac.deadline,
