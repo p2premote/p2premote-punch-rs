@@ -180,34 +180,27 @@ pub async fn connect_tcp_bind(
 
 /// GetFreePort: a port bindable by both TCP and UDP, per family.
 pub fn get_free_port_for(ipv6: bool) -> io::Result<u16> {
+    let mut last_error = io::Error::new(io::ErrorKind::AddrInUse, "no free TCP/UDP ports available");
     for _ in 0..100 {
-        let tcp = if ipv6 {
-            TcpListener::bind("[::]:0")?
-        } else {
-            TcpListener::bind("0.0.0.0:0")?
-        };
-        let port = tcp.local_addr()?.port();
+        // Windows TCP allocation does not honor UDP excluded port ranges.
+        // Let UDP choose its port first, then check that TCP can share it.
         let udp = if ipv6 {
-            StdUdpSocket::bind((std::net::Ipv6Addr::UNSPECIFIED, port))
+            StdUdpSocket::bind("[::]:0")?
         } else {
-            StdUdpSocket::bind(("0.0.0.0", port))
+            StdUdpSocket::bind("0.0.0.0:0")?
         };
-        match udp {
-            Ok(udp) => {
-                drop(udp);
-                drop(tcp);
-                return Ok(port);
-            }
-            Err(_) => {
-                drop(tcp);
-                continue;
-            }
+        let port = udp.local_addr()?.port();
+        let tcp = if ipv6 {
+            TcpListener::bind((std::net::Ipv6Addr::UNSPECIFIED, port))
+        } else {
+            TcpListener::bind(("0.0.0.0", port))
+        };
+        match tcp {
+            Ok(_) => return Ok(port),
+            Err(err) => last_error = err,
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::AddrInUse,
-        "no free TCP/UDP ports available",
-    ))
+    Err(last_error)
 }
 
 /// GetFreePort (IPv4 form, the netx.GetFreePort default).
@@ -281,7 +274,8 @@ mod tests {
     #[test]
     fn free_port_is_bindable() {
         let port = get_free_port().unwrap();
-        assert!(port > 0);
+        let _udp = StdUdpSocket::bind(("0.0.0.0", port)).unwrap();
+        let _tcp = TcpListener::bind(("0.0.0.0", port)).unwrap();
     }
 
     #[test]

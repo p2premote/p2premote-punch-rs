@@ -1136,40 +1136,46 @@ mod tests {
 
     #[tokio::test]
     async fn native_retry_loop_retries_only_with_peer_support_and_stops_on_terminal_error() {
-        for supported in [false, true] {
-            let (a, _b, _, _) = pair();
-            let call = a
-                .register_call("network/2", "abcdefghijklmnop", Duration::from_secs(10))
-                .unwrap();
-            call.set_peer_native_retry(supported);
-            let scope = Scope::from_timeout(Duration::from_secs(10));
-            let mut invoked = 0;
-            let (_, attempts, error) = super::super::udp_tunnel::establish_internet_udp_p2p_with(
-                &scope,
-                "udp4",
-                Some(call.clone()),
-                || {
-                    invoked += 1;
-                    let code = if invoked == 1 {
-                        ErrorCode::TraversalPunchTimeout
-                    } else {
+        for retry_code in [
+            ErrorCode::TraversalPunchTimeout,
+            ErrorCode::TraversalNatDetectionIoFailed,
+            ErrorCode::TraversalNatDetectionNoResult,
+        ] {
+            for supported in [false, true] {
+                let (a, _b, _, _) = pair();
+                let call = a
+                    .register_call("network/2", "abcdefghijklmnop", Duration::from_secs(10))
+                    .unwrap();
+                call.set_peer_native_retry(supported);
+                let scope = Scope::from_timeout(Duration::from_secs(10));
+                let mut invoked = 0;
+                let (_, attempts, error) = super::super::udp_tunnel::establish_internet_udp_p2p_with(
+                    &scope,
+                    "udp4",
+                    Some(call.clone()),
+                    || {
+                        invoked += 1;
+                        let code = if invoked == 1 {
+                            retry_code.clone()
+                        } else {
+                            ErrorCode::NativeInputInvalidArgument
+                        };
+                        std::future::ready(Err(P2pError::new(code, "probe failed")))
+                    },
+                )
+                .await;
+                assert_eq!(attempts, if supported { 2 } else { 1 });
+                assert_eq!(invoked, attempts);
+                assert_eq!(
+                    error.unwrap().code(),
+                    if supported {
                         ErrorCode::NativeInputInvalidArgument
-                    };
-                    std::future::ready(Err(P2pError::new(code, "probe failed")))
-                },
-            )
-            .await;
-            assert_eq!(attempts, if supported { 2 } else { 1 });
-            assert_eq!(invoked, attempts);
-            assert_eq!(
-                error.unwrap().code(),
-                if supported {
-                    ErrorCode::NativeInputInvalidArgument
-                } else {
-                    ErrorCode::TraversalPunchTimeout
-                }
-            );
-            assert!(call.failure().is_none());
+                    } else {
+                        retry_code.clone()
+                    }
+                );
+                assert!(call.failure().is_none());
+            }
         }
     }
 
@@ -1211,8 +1217,8 @@ mod tests {
                 invoked += 1;
                 std::future::ready(if invoked == 1 {
                     Err(P2pError::new(
-                        ErrorCode::TraversalPunchTimeout,
-                        "probe timed out",
+                        ErrorCode::TraversalNatDetectionNoResult,
+                        "peer NAT discovery returned no usable addresses",
                     ))
                 } else {
                     Ok(connection.take().unwrap())

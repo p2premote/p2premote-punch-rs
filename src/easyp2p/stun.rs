@@ -799,8 +799,13 @@ pub async fn get_networks_public_ips(
     let mut bind_owned = bind.to_string();
     let bind_unspecified = bind.is_empty();
     if bind.is_empty() {
-        let port = netx::get_free_port()
-            .map_err(|e| P2pError::new(ErrorCode::TraversalNatDetectionIoFailed, e.to_string()))?;
+        let port = netx::get_free_port().map_err(|e| {
+            P2pError::with_source(
+                ErrorCode::TraversalNatDetectionIoFailed,
+                "failed to allocate STUN port",
+                e,
+            )
+        })?;
         bind_owned = format!(":{}", port);
     }
 
@@ -833,9 +838,14 @@ pub async fn get_networks_public_ips(
     drop(tx);
     let mut rx = rx;
     let mut all_results = Vec::new();
+    let mut first_error = None;
     for _ in 0..tasks.len() {
-        if let Some((_, Ok(results))) = rx.recv().await {
-            all_results.extend(results);
+        match rx.recv().await {
+            Some((_, Ok(results))) => all_results.extend(results),
+            Some((_, Err(error))) => {
+                first_error.get_or_insert(error);
+            }
+            None => break,
         }
     }
     for task in tasks {
@@ -845,10 +855,12 @@ pub async fn get_networks_public_ips(
     }
 
     if all_results.is_empty() {
-        return Err(P2pError::new(
-            ErrorCode::TraversalNatDetectionIoFailed,
-            "no public IP addresses found or all attempts failed",
-        ));
+        return Err(first_error.unwrap_or_else(|| {
+            P2pError::new(
+                ErrorCode::TraversalNatDetectionNoResult,
+                "no public IP addresses found or all attempts failed",
+            )
+        }));
     }
     Ok(all_results)
 }

@@ -114,15 +114,8 @@ async fn detect_nat_address_info(
         "    Getting local public IP info via {} STUN servers...",
         stun::stun_servers().len()
     );
-    let results =
-        stun::get_networks_public_ips(scope, networks, bind, Duration::from_millis(2828)).await;
-    let all_results = match results {
-        Ok(r) => r,
-        Err(err) => {
-            crate::p2plog!("    Failed to get public IP info: {}", err);
-            Vec::new()
-        }
-    };
+    let all_results =
+        stun::get_networks_public_ips(scope, networks, bind, Duration::from_millis(2828)).await?;
     if scope.expired() {
         return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
     }
@@ -159,7 +152,112 @@ async fn detect_nat_address_info(
             }
         }
     }
+    if addresses.is_empty() {
+        return Err(P2pError::new(
+            ErrorCode::TraversalNatDetectionNoResult,
+            format!("STUN returned no usable addresses: {:?}", all_results),
+        ));
+    }
     Ok(addresses)
+}
+
+fn check_discovered_addresses(
+    local: &ExchangeAddressPayload,
+    remote: &ExchangeAddressPayload,
+    discovery_error: Option<P2pError>,
+) -> Result<()> {
+    if local.addresses.is_empty() {
+        return Err(discovery_error
+            .unwrap_or_else(|| {
+                P2pError::new(
+                    ErrorCode::TraversalNatDetectionNoResult,
+                    "local NAT discovery returned no usable addresses",
+                )
+            })
+            .context("local NAT address discovery failed"));
+    }
+    if remote.addresses.is_empty() {
+        return Err(P2pError::new(
+            ErrorCode::TraversalNatDetectionNoResult,
+            "peer NAT discovery returned no usable addresses",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+
+    fn populated() -> ExchangeAddressPayload {
+        ExchangeAddressPayload {
+            addresses: vec![candidates::PunchingAddressInfo {
+                network: "udp4".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_candidates_preserve_local_io_failure_and_identify_peer_failure() {
+        let empty = ExchangeAddressPayload::default();
+        let error = check_discovered_addresses(
+            &empty,
+            &populated(),
+            Some(P2pError::with_source(
+                ErrorCode::TraversalNatDetectionIoFailed,
+                "failed to allocate STUN port",
+                std::io::Error::from_raw_os_error(10013),
+            )),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::TraversalNatDetectionIoFailed);
+        let mut source: &dyn std::error::Error = &error;
+        loop {
+            if let Some(io) = source.downcast_ref::<std::io::Error>() {
+                assert_eq!(io.raw_os_error(), Some(10013));
+                break;
+            }
+            source = source.source().expect("original bind failure retained");
+        }
+        assert!(!error.is_unretryable());
+        assert!(error.to_string().contains("local NAT"));
+
+        let error = check_discovered_addresses(&populated(), &empty, None).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::TraversalNatDetectionNoResult);
+        assert!(error.to_string().contains("peer NAT"));
+        assert!(!error.is_unretryable());
+
+        let error = check_discovered_addresses(&empty, &empty, None).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::TraversalNatDetectionNoResult);
+    }
+
+    #[test]
+    fn mapped_candidates_can_recover_from_failed_stun() {
+        check_discovered_addresses(
+            &populated(),
+            &populated(),
+            Some(P2pError::new(
+                ErrorCode::TraversalNatDetectionNoResult,
+                "STUN failed",
+            )),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn discovery_preserves_bind_failure() {
+        let error = detect_nat_address_info(
+            &Scope::from_timeout(Duration::from_secs(1)),
+            &["udp4".into()],
+            "invalid-bind",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::TraversalNatDetectionIoFailed);
+        assert!(error.to_string().contains("invalid bind address"));
+    }
 }
 
 /// Do_autoP2PEx2: STUN + address exchange + candidate build.
@@ -192,7 +290,20 @@ pub async fn do_auto_p2p_ex2(
         detect_nat_address_info(scope, networks, bind),
         super::portmap::discover(scope, networks),
     );
-    let mut my_addresses = detected?;
+    // Exchange even an empty address list so both peers can finish this attempt
+    // and agree on native retry support. UPnP may still supply a usable address.
+    let (mut my_addresses, discovery_error) = match detected {
+        Ok(addresses) => (addresses, None),
+        Err(error) => {
+            crate::p2pevent!(
+                "local NAT discovery failed: networks={:?}, error_code={}, error={:?}",
+                networks,
+                error.code().as_str(),
+                error
+            );
+            (Vec::new(), Some(error))
+        }
+    };
     let port_mappings = super::portmap::augment(scope, &mut my_addresses, discovery).await;
     if scope.expired() {
         return Err(scope.interruption(ErrorCode::TraversalPunchTimeout));
@@ -263,12 +374,7 @@ pub async fn do_auto_p2p_ex2(
         remote_payload.caps
     );
 
-    if my_payload.addresses.is_empty() || remote_payload.addresses.is_empty() {
-        return Err(P2pError::new(
-            ErrorCode::TraversalCandidateSelectionNoCommonNetwork,
-            "no common usable network types with peer",
-        ));
-    }
+    check_discovered_addresses(&my_payload, &remote_payload, discovery_error)?;
 
     let mut shared_key = [0u8; 32];
     if need_shared_key {
